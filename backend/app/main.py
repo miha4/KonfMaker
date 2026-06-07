@@ -1,35 +1,24 @@
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from .calculator import DEFAULT_SHIFTS, calculate
 from .models import CalculatorRequest
 
 app = FastAPI(title="KonfMaker API", version="0.1.0")
 
-
-def development_cors_headers(request: Request) -> dict[str, str]:
-    origin = request.headers.get("origin") or "*"
-    requested_headers = request.headers.get("access-control-request-headers") or "*"
-    return {
-        "Access-Control-Allow-Origin": origin,
-        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-        "Access-Control-Allow-Headers": requested_headers,
-        "Access-Control-Max-Age": "86400",
-        "Vary": "Origin",
-    }
-
-
-@app.middleware("http")
-async def add_development_cors_headers(request: Request, call_next):
-    # Codespaces exposes frontend and backend on different forwarded hosts.
-    # This MVP API does not use cookies or credentialed requests, so the
-    # development server can safely allow browser API calls from those hosts.
-    if request.method == "OPTIONS":
-        return Response(status_code=204, headers=development_cors_headers(request))
-
-    response = await call_next(request)
-    for header, value in development_cors_headers(request).items():
-        response.headers.setdefault(header, value)
-    return response
+# Development CORS is intentionally permissive because this prototype has no
+# cookie/session based authentication. In GitHub Codespaces the recommended
+# path is the Vite /api proxy (same browser origin), but these headers also keep
+# manual VITE_API_BASE_URL setups working when the frontend and backend are
+# opened on different forwarded ports.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=r"https://.*\.app\.github\.dev|http://localhost:\d+|http://127\.0\.0\.1:\d+",
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+    allow_credentials=False,
+    max_age=86400,
+)
 
 
 @app.get("/api/health")
