@@ -44,3 +44,16 @@ def test_api_calculate_sector_hours():
     data = response.json()
     assert data["feasible"] is True
     assert data["minimum_required_fl"] == 7
+
+
+def test_codespaces_origin_is_allowed_for_cors_preflight():
+    client = TestClient(app)
+    response = client.options(
+        "/api/default-settings",
+        headers={
+            "Origin": "https://example-codespace-5173.app.github.dev",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "https://example-codespace-5173.app.github.dev"
