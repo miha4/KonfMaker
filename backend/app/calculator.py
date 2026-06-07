@@ -170,16 +170,33 @@ def build_schedule(
             candidates = [person for person in people if available_for_current_slot(person)]
             lower_candidates = [person for person in candidates if can_fill_position(person, "lower")]
             upper_candidates = [person for person in candidates if can_fill_position(person, "upper")]
-            possible_pairs = [
-                (lower, upper)
-                for lower in lower_candidates
-                for upper in upper_candidates
-                if lower.id != upper.id
-            ]
-            if not possible_pairs:
+
+            best_pair: tuple[PersonState, PersonState] | None = None
+            best_pair_key: tuple[int, int, int, int, int, str, str] | None = None
+            for lower in lower_candidates:
+                available_upper_candidates = [upper for upper in upper_candidates if upper.id != lower.id]
+                if not available_upper_candidates:
+                    continue
+                upper = min(
+                    available_upper_candidates,
+                    key=lambda candidate: (
+                        position_preference(candidate, "upper"),
+                        role_penalty(candidate),
+                        candidate.sector_hours,
+                        remaining_slots(candidate),
+                        candidate.id,
+                    ),
+                )
+                current_pair = (lower, upper)
+                current_key = pair_key(current_pair)
+                if best_pair_key is None or current_key < best_pair_key:
+                    best_pair = current_pair
+                    best_pair_key = current_key
+
+            if best_pair is None:
                 break
 
-            lower, upper = min(possible_pairs, key=pair_key)
+            lower, upper = best_pair
             scheduled_sectors.append(ScheduledSector(lower_worker=lower.id, upper_worker=upper.id))
 
             for person in (lower, upper):
@@ -260,6 +277,26 @@ def target_sector_counts_for_request(request: CalculatorRequest) -> list[int]:
     return request.requested_sector_counts
 
 
+def shift_demand_score(shift: ShiftRule, target_sector_counts: list[int]) -> int:
+    return sum(target_sector_counts[slot] for slot in shift_slots(shift))
+
+
+def generated_shift_key(
+    shift_code: str,
+    shift_map: dict[str, ShiftRule],
+    target_sector_counts: list[int],
+    people: list[PersonState],
+) -> tuple[int, int, int, str]:
+    shift = shift_map[shift_code]
+    assigned_to_shift = sum(1 for person in people if person.shift == shift_code)
+    demand_score = shift_demand_score(shift, target_sector_counts)
+
+    # Keep generation cheap: rank shifts by how much requested demand they cover,
+    # while subtracting a small load penalty so one popular shift does not absorb
+    # every generated person. This replaces repeated full schedule simulations.
+    return (demand_score - assigned_to_shift * 2, demand_score, -assigned_to_shift, shift_code)
+
+
 def calculate(request: CalculatorRequest) -> CalculatorResponse:
     shift_map = {shift.code: shift for shift in request.settings.shifts}
     target_sector_counts = target_sector_counts_for_request(request)
@@ -293,32 +330,20 @@ def calculate(request: CalculatorRequest) -> CalculatorResponse:
             return True
         return sum(1 for person in candidate_people if person.shift == shift_code) < max_people
 
-    def current_score(candidate_people: list[PersonState]) -> int:
-        return build_schedule(
-            candidate_people,
-            shift_map,
-            target_sector_counts,
-            request.settings.max_consecutive_work_hours,
-            request.settings.rest_after_max_consecutive_hours,
-        ).total_hours
-
-    # Greedy generator: each remaining virtual person is placed into the shift that improves
-    # the achievable sector-hour schedule the most. This is intentionally lightweight for MVP.
+    # Fast generator: rank shifts with a cheap demand/load heuristic, then run the
+    # real paired-sector scheduler once at the end. The previous version simulated
+    # a full 24-hour schedule for every person/shift candidate, which could keep
+    # the API busy long enough for a 504 timeout.
     remaining_licenses = ["APS"] * remaining_aps + ["ACS"] * remaining_acs + ["FL"] * remaining_fl
     for license_name in remaining_licenses:
-        best_person: PersonState | None = None
-        best_score = -1
-        for shift_code in allowed_shifts:
-            if not shift_has_capacity(people, shift_code):
-                continue
-            candidate = PersonState(id=label_for_person(next_id), license=license_name, shift=shift_code)
-            score = current_score(people + [candidate])
-            if score > best_score:
-                best_score = score
-                best_person = candidate
-        if best_person is None:
+        eligible_shifts = [shift_code for shift_code in allowed_shifts if shift_has_capacity(people, shift_code)]
+        if not eligible_shifts:
             break
-        people.append(best_person)
+        best_shift = max(
+            eligible_shifts,
+            key=lambda shift_code: generated_shift_key(shift_code, shift_map, target_sector_counts, people),
+        )
+        people.append(PersonState(id=label_for_person(next_id), license=license_name, shift=best_shift))
         next_id += 1
 
     scheduled = build_schedule(

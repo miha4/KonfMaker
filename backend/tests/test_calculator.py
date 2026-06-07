@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 
+import app.calculator as calculator_module
 from app.calculator import DEFAULT_SHIFTS, calculate
 from app.main import app
 from app.models import CalculatorRequest, CalculatorSettings
@@ -134,3 +135,20 @@ def test_requested_sector_counts_limit_open_sectors_by_hour():
     assert result.hourly_coverage[1].open_sectors <= 4
     assert all(hour.open_sectors == 0 for hour in result.hourly_coverage[2:])
     assert result.max_sector_hours <= sum(requested)
+
+
+def test_generator_runs_final_scheduler_once(monkeypatch):
+    calls = 0
+    original_build_schedule = calculator_module.build_schedule
+
+    def counted_build_schedule(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original_build_schedule(*args, **kwargs)
+
+    monkeypatch.setattr(calculator_module, "build_schedule", counted_build_schedule)
+
+    result = calculate(make_request())
+
+    assert result.feasible is True
+    assert calls == 1
