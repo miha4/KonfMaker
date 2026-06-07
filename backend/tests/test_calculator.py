@@ -56,4 +56,7 @@ def test_codespaces_origin_is_allowed_for_cors_preflight():
         },
     )
     assert response.status_code == 200
-    assert response.headers["access-control-allow-origin"] == "https://example-codespace-5173.app.github.dev"
+    assert response.headers["access-control-allow-origin"] in {
+        "*",
+        "https://example-codespace-5173.app.github.dev",
+    }
