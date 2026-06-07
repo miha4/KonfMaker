@@ -31,11 +31,13 @@ The frontend expects the API at `http://localhost:8000` by default. Override wit
 
 ### GitHub Codespaces
 
-When running in Codespaces, start both ports and use the forwarded backend URL for the frontend:
+When running in Codespaces, start both ports:
 
-1. Start the backend on port `8000` and the frontend on port `5173`.
-2. In the **Ports** panel, copy the forwarded address for port `8000`.
-3. Start the frontend with that backend address:
+1. Start the backend on port `8000`.
+2. Start the frontend on port `5173`.
+3. Open the forwarded frontend URL for port `5173`.
+
+The frontend automatically detects GitHub's forwarded `*.app.github.dev` URL and calls the matching backend URL on port `8000`. You can still override this manually if needed:
 
 ```bash
 cd frontend
