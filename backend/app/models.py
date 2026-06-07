@@ -19,14 +19,15 @@ class CalculatorSettings(BaseModel):
 class CalculatorRequest(BaseModel):
     total_people: int = Field(ge=1, le=80)
     fl_count: int = Field(ge=0, le=80)
+    aps_count: int = Field(default=0, ge=0, le=80)
     acs_count: int = Field(ge=0, le=80)
     include_fmp: bool = True
     settings: CalculatorSettings
 
     @model_validator(mode="after")
     def counts_must_match(self) -> "CalculatorRequest":
-        if self.fl_count + self.acs_count != self.total_people:
-            raise ValueError("FL + ACS mora biti enako skupnemu številu ljudi.")
+        if self.fl_count + self.aps_count + self.acs_count != self.total_people:
+            raise ValueError("FL + APS + ACS mora biti enako skupnemu številu ljudi.")
         return self
 
 
@@ -42,15 +43,21 @@ class VirtualPerson(BaseModel):
 class ShiftSummary(BaseModel):
     shift: str
     fl: int
+    aps: int = 0
     acs: int
     total: int
+
+
+class SectorAssignment(BaseModel):
+    lower_worker: str
+    upper_worker: str
 
 
 class HourlyCoverage(BaseModel):
     hour: str
     open_sectors: int
     workers: list[str]
-    sector_workers: list[str | None]
+    sector_workers: list[SectorAssignment | None]
 
 
 class CalculatorResponse(BaseModel):

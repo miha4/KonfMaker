@@ -5,10 +5,11 @@ from app.main import app
 from app.models import CalculatorRequest, CalculatorSettings
 
 
-def make_request(total=28, fl=12, acs=16, fmp=True):
+def make_request(total=28, fl=12, aps=0, acs=16, fmp=True):
     return CalculatorRequest(
         total_people=total,
         fl_count=fl,
+        aps_count=aps,
         acs_count=acs,
         include_fmp=fmp,
         settings=CalculatorSettings(
@@ -96,4 +97,26 @@ def test_workers_are_only_scheduled_inside_their_shift_hours():
 def test_hourly_coverage_includes_sector_slots():
     result = calculate(make_request())
     assert all(len(hour.sector_workers) == 5 for hour in result.hourly_coverage)
-    assert all(hour.sector_workers[: hour.open_sectors] == hour.workers for hour in result.hourly_coverage)
+
+    for hour in result.hourly_coverage:
+        assigned_pairs = hour.sector_workers[: hour.open_sectors]
+        flattened_workers = [
+            worker
+            for sector in assigned_pairs
+            if sector is not None
+            for worker in (sector.lower_worker, sector.upper_worker)
+        ]
+        assert flattened_workers == hour.workers
+        assert all(sector is None for sector in hour.sector_workers[hour.open_sectors :])
+
+
+def test_each_open_sector_has_lower_and_upper_qualified_controllers():
+    result = calculate(make_request(total=28, fl=12, aps=6, acs=10))
+    people_by_id = {person.id: person for person in result.people}
+
+    for hour in result.hourly_coverage:
+        for sector in hour.sector_workers[: hour.open_sectors]:
+            assert sector is not None
+            assert people_by_id[sector.lower_worker].license in {"APS", "FL"}
+            assert people_by_id[sector.upper_worker].license in {"ACS", "FL"}
+            assert sector.lower_worker != sector.upper_worker

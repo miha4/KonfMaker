@@ -7,6 +7,7 @@ from .models import (
     CalculatorRequest,
     CalculatorResponse,
     HourlyCoverage,
+    SectorAssignment,
     ShiftRule,
     ShiftSummary,
     VirtualPerson,
@@ -14,6 +15,8 @@ from .models import (
 
 DAY_START = 7
 HOURS_IN_DAY = 24
+LOWER_SECTOR_LICENSES = {"APS", "FL"}
+UPPER_SECTOR_LICENSES = {"ACS", "FL"}
 
 
 DEFAULT_SHIFTS = [
@@ -43,10 +46,23 @@ class PersonState:
 
 
 @dataclass(frozen=True)
+class ScheduledSector:
+    lower_worker: str
+    upper_worker: str
+
+
+@dataclass(frozen=True)
 class ScheduledResult:
     people: list[PersonState]
-    hourly_workers: list[list[str]]
+    hourly_sectors: list[list[ScheduledSector]]
     total_hours: int
+
+    @property
+    def hourly_workers(self) -> list[list[str]]:
+        return [
+            [worker for sector in sectors for worker in (sector.lower_worker, sector.upper_worker)]
+            for sectors in self.hourly_sectors
+        ]
 
 
 def hour_index(hour: int) -> int:
@@ -100,6 +116,18 @@ def can_work_slot(worked: list[int], slot: int, max_consecutive: int, rest_after
     return True
 
 
+def can_fill_position(person: PersonState, position: str) -> bool:
+    if position == "lower":
+        return person.license in LOWER_SECTOR_LICENSES
+    return person.license in UPPER_SECTOR_LICENSES
+
+
+def position_preference(person: PersonState, position: str) -> int:
+    if position == "lower":
+        return 0 if person.license == "APS" else 1
+    return 0 if person.license == "ACS" else 1
+
+
 def build_schedule(
     people: list[PersonState],
     shift_map: dict[str, ShiftRule],
@@ -110,47 +138,67 @@ def build_schedule(
     available_slots = {person.id: shift_slots(shift_map[person.shift]) for person in people}
     worked_slots: dict[str, list[int]] = defaultdict(list)
     person_map = {person.id: person for person in people}
-    hourly_workers: list[list[str]] = []
+    hourly_sectors: list[list[ScheduledSector]] = []
 
     for slot in range(HOURS_IN_DAY):
-        candidates: list[PersonState] = []
-        for person in people:
+        scheduled_sectors: list[ScheduledSector] = []
+
+        def available_for_current_slot(person: PersonState) -> bool:
             if slot not in available_slots[person.id]:
-                continue
+                return False
             previous = worked_slots[person.id]
-            if not can_work_slot(previous, slot, max_consecutive, rest_after_max):
-                continue
-            candidates.append(person)
+            if slot in previous:
+                return False
+            return can_work_slot(previous, slot, max_consecutive, rest_after_max)
 
-        def candidate_key(person: PersonState) -> tuple[int, int, int, int, str]:
-            # Prefer people who leave sooner, have fewer assigned sector hours, and are not FMP.
-            remaining = len([future for future in available_slots[person.id] if future >= slot])
+        def remaining_slots(person: PersonState) -> int:
+            return len([future for future in available_slots[person.id] if future >= slot])
+
+        def pair_key(pair: tuple[PersonState, PersonState]) -> tuple[int, int, int, int, int, str, str]:
+            lower, upper = pair
             return (
-                role_penalty(person),
-                person.sector_hours,
-                remaining,
-                0 if person.license == "ACS" else 1,
-                person.id,
+                position_preference(lower, "lower"),
+                position_preference(upper, "upper"),
+                role_penalty(lower) + role_penalty(upper),
+                lower.sector_hours + upper.sector_hours,
+                remaining_slots(lower) + remaining_slots(upper),
+                lower.id,
+                upper.id,
             )
 
-        selected = sorted(candidates, key=candidate_key)[:max_sectors_per_hour]
-        worker_ids = [person.id for person in selected]
-        hourly_workers.append(worker_ids)
-        for person in selected:
-            worked_slots[person.id].append(slot)
-            person_map[person.id] = replace(
-                person_map[person.id],
-                sector_hours=person_map[person.id].sector_hours + 1,
-                used_as_sector_controller=True,
-            )
+        while len(scheduled_sectors) < max_sectors_per_hour:
+            candidates = [person for person in people if available_for_current_slot(person)]
+            lower_candidates = [person for person in candidates if can_fill_position(person, "lower")]
+            upper_candidates = [person for person in candidates if can_fill_position(person, "upper")]
+            possible_pairs = [
+                (lower, upper)
+                for lower in lower_candidates
+                for upper in upper_candidates
+                if lower.id != upper.id
+            ]
+            if not possible_pairs:
+                break
 
-        people = [person_map[person.id] for person in people]
+            lower, upper = min(possible_pairs, key=pair_key)
+            scheduled_sectors.append(ScheduledSector(lower_worker=lower.id, upper_worker=upper.id))
+
+            for person in (lower, upper):
+                worked_slots[person.id].append(slot)
+                person_map[person.id] = replace(
+                    person_map[person.id],
+                    sector_hours=person_map[person.id].sector_hours + 1,
+                    used_as_sector_controller=True,
+                )
+
+            people = [person_map[person.id] for person in people]
+
+        hourly_sectors.append(scheduled_sectors)
 
     scheduled_people = [person_map[person.id] for person in people]
     return ScheduledResult(
         people=scheduled_people,
-        hourly_workers=hourly_workers,
-        total_hours=sum(len(workers) for workers in hourly_workers),
+        hourly_sectors=hourly_sectors,
+        total_hours=sum(len(sectors) for sectors in hourly_sectors),
     )
 
 
@@ -171,8 +219,9 @@ def summarize_shifts(people: list[PersonState]) -> list[ShiftSummary]:
     summaries: list[ShiftSummary] = []
     for shift, counter in sorted(counts.items(), key=sort_key):
         fl = counter["FL"]
+        aps = counter["APS"]
         acs = counter["ACS"]
-        summaries.append(ShiftSummary(shift=shift, fl=fl, acs=acs, total=fl + acs))
+        summaries.append(ShiftSummary(shift=shift, fl=fl, aps=aps, acs=acs, total=fl + aps + acs))
     return summaries
 
 
@@ -226,6 +275,7 @@ def calculate(request: CalculatorRequest) -> CalculatorResponse:
 
     people = list(mandatory_people)
     remaining_fl = request.fl_count - minimum_required_fl
+    remaining_aps = request.aps_count
     remaining_acs = request.acs_count
     allowed_shifts = [shift.code for shift in request.settings.shifts]
     max_people_by_shift = {"A21": request.settings.required_night_fl_count}
@@ -247,7 +297,7 @@ def calculate(request: CalculatorRequest) -> CalculatorResponse:
 
     # Greedy generator: each remaining virtual person is placed into the shift that improves
     # the achievable sector-hour schedule the most. This is intentionally lightweight for MVP.
-    remaining_licenses = ["ACS"] * remaining_acs + ["FL"] * remaining_fl
+    remaining_licenses = ["APS"] * remaining_aps + ["ACS"] * remaining_acs + ["FL"] * remaining_fl
     for license_name in remaining_licenses:
         best_person: PersonState | None = None
         best_score = -1
@@ -280,6 +330,7 @@ def calculate(request: CalculatorRequest) -> CalculatorResponse:
             "Nočna izmena je omejena na "
             f"{request.settings.required_night_fl_count} ljudi v A21; generator ne dodaja dodatnih A21."
         )
+    notes.append("Vsak odprt sektor potrebuje spodnjega kontrolorja (APS ali FL) in zgornjega kontrolorja (ACS ali FL).")
     notes.append("FMP je dovoljen kot sektorski kontrolor, vendar ima pri izbiri delavcev slabšo prioriteto.")
 
     response_people = [
@@ -297,9 +348,13 @@ def calculate(request: CalculatorRequest) -> CalculatorResponse:
     hourly_coverage = [
         HourlyCoverage(
             hour=hour_label(slot),
-            open_sectors=len(workers),
+            open_sectors=len(scheduled.hourly_sectors[slot]),
             workers=workers,
-            sector_workers=workers + [None] * (request.settings.max_sectors_per_hour - len(workers)),
+            sector_workers=[
+                SectorAssignment(lower_worker=sector.lower_worker, upper_worker=sector.upper_worker)
+                for sector in scheduled.hourly_sectors[slot]
+            ]
+            + [None] * (request.settings.max_sectors_per_hour - len(scheduled.hourly_sectors[slot])),
         )
         for slot, workers in enumerate(scheduled.hourly_workers)
     ]

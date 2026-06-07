@@ -171,3 +171,8 @@ th, td { padding: 11px 12px; border-bottom: 1px solid #e5edf4; }
   color: #60748b;
   font-weight: 750;
 }
+
+.position-line {
+  display: block;
+  line-height: 1.35;
+}

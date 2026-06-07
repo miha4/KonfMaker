@@ -26,6 +26,10 @@ const fallbackSettings: CalculatorSettings = {
 
 type Tab = 'calculator' | 'settings';
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
 function NumberField({
   label,
   value,
@@ -176,6 +180,11 @@ function SectorSchedule({ result }: { result: CalculatorResponse }) {
   const maxSectors = Math.max(...result.hourly_coverage.map((hour) => hour.sector_workers.length), 1);
   const sectorHeaders = Array.from({ length: maxSectors }, (_, index) => `Sektor ${index + 1}`);
 
+  const controllerLabel = (workerId: string) => {
+    const person = peopleById.get(workerId);
+    return person ? `${person.id} · ${person.role ?? person.shift} · ${person.license}` : workerId;
+  };
+
   return (
     <section className="panel">
       <div className="panel-header compact">
@@ -185,20 +194,22 @@ function SectorSchedule({ result }: { result: CalculatorResponse }) {
         </div>
       </div>
       <div className="schedule-scroll" aria-label="Razpored ljudi po sektorjih in urah">
-        <div className="schedule-grid" style={{ gridTemplateColumns: `120px repeat(${maxSectors}, minmax(108px, 1fr))` }}>
+        <div className="schedule-grid" style={{ gridTemplateColumns: `120px repeat(${maxSectors}, minmax(148px, 1fr))` }}>
           <div className="schedule-cell schedule-head sticky-col">Ura</div>
           {sectorHeaders.map((sector) => (
             <div className="schedule-cell schedule-head" key={sector}>{sector}</div>
           ))}
           {result.hourly_coverage.flatMap((hour) => [
             <div className="schedule-cell schedule-hour sticky-col" key={`${hour.hour}-label`}>{hour.hour}</div>,
-            ...hour.sector_workers.map((workerId, index) => {
-              const person = workerId ? peopleById.get(workerId) : undefined;
-              const label = person ? `${person.id} · ${person.role ?? person.shift}` : 'Zaprto';
+            ...hour.sector_workers.map((sector, index) => {
+              if (!sector) {
+                return <div className="schedule-cell closed" key={`${hour.hour}-${index}`}>Zaprto</div>;
+              }
+
               return (
-                <div className={`schedule-cell ${workerId ? 'assigned' : 'closed'}`} key={`${hour.hour}-${index}`}>
-                  {label}
-                  {person ? <small>{person.license}</small> : null}
+                <div className="schedule-cell assigned" key={`${hour.hour}-${index}`}>
+                  <span className="position-line">Spodaj: {controllerLabel(sector.lower_worker)}</span>
+                  <span className="position-line">Zgoraj: {controllerLabel(sector.upper_worker)}</span>
                 </div>
               );
             }),
@@ -276,6 +287,7 @@ function Results({ result }: { result: CalculatorResponse | null }) {
               <tr>
                 <th>Izmena / vloga</th>
                 <th>FL</th>
+                <th>APS</th>
                 <th>ACS</th>
                 <th>Skupaj</th>
               </tr>
@@ -285,6 +297,7 @@ function Results({ result }: { result: CalculatorResponse | null }) {
                 <tr key={row.shift}>
                   <td className="strong">{row.shift}</td>
                   <td>{row.fl}</td>
+                  <td>{row.aps}</td>
                   <td>{row.acs}</td>
                   <td>{row.total}</td>
                 </tr>
@@ -345,6 +358,7 @@ export default function App() {
   const [settings, setSettings] = useState<CalculatorSettings>(fallbackSettings);
   const [totalPeople, setTotalPeople] = useState(28);
   const [flCount, setFlCount] = useState(12);
+  const [apsCount, setApsCount] = useState(0);
   const [includeFmp, setIncludeFmp] = useState(true);
   const [result, setResult] = useState<CalculatorResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -359,7 +373,16 @@ export default function App() {
       });
   }, []);
 
-  const acsCount = useMemo(() => Math.max(0, totalPeople - flCount), [flCount, totalPeople]);
+  const acsCount = useMemo(() => Math.max(0, totalPeople - flCount - apsCount), [apsCount, flCount, totalPeople]);
+
+  const updateCounts = (nextTotal: number, nextFl: number, nextAps: number) => {
+    const safeTotal = clamp(nextTotal, 1, 80);
+    const safeFl = clamp(nextFl, 0, safeTotal);
+    const safeAps = clamp(nextAps, 0, safeTotal - safeFl);
+    setTotalPeople(safeTotal);
+    setFlCount(safeFl);
+    setApsCount(safeAps);
+  };
 
   const runCalculation = async () => {
     setIsLoading(true);
@@ -367,6 +390,7 @@ export default function App() {
     const payload: CalculatorRequest = {
       total_people: totalPeople,
       fl_count: flCount,
+      aps_count: apsCount,
       acs_count: acsCount,
       include_fmp: includeFmp,
       settings,
@@ -415,14 +439,34 @@ export default function App() {
             <p className="eyebrow">Vhodni podatki</p>
             <h2>Dnevna sestava ljudi</h2>
             <div className="form-grid">
-              <NumberField label="Skupaj ljudi" min={1} max={80} value={totalPeople} onChange={setTotalPeople} />
-              <NumberField label="FL licence" min={0} max={totalPeople} value={flCount} onChange={setFlCount} />
+              <NumberField
+                label="Skupaj ljudi"
+                min={1}
+                max={80}
+                value={totalPeople}
+                onChange={(value) => updateCounts(value, flCount, apsCount)}
+              />
+              <NumberField
+                label="FL licence"
+                min={0}
+                max={totalPeople}
+                value={flCount}
+                onChange={(value) => updateCounts(totalPeople, value, apsCount)}
+              />
+              <NumberField
+                label="APS licence"
+                min={0}
+                max={totalPeople - flCount}
+                value={apsCount}
+                onChange={(value) => updateCounts(totalPeople, flCount, value)}
+                helper="Spodnji kontrolor: APS ali FL."
+              />
               <NumberField
                 label="ACS licence"
                 min={0}
                 value={acsCount}
-                onChange={(value) => setFlCount(Math.max(0, totalPeople - value))}
-                helper="Za zdaj računamo ACS = skupaj − FL."
+                onChange={(value) => updateCounts(totalPeople, flCount, totalPeople - flCount - value)}
+                helper="ACS = skupaj − FL − APS. Zgornji kontrolor: ACS ali FL."
               />
             </div>
             <label className="check-row fmp-row">
