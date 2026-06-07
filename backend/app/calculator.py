@@ -186,12 +186,13 @@ def create_mandatory_people(request: CalculatorRequest) -> tuple[list[PersonStat
         people.append(PersonState(id=label_for_person(next_id), license=license_name, shift=shift, role=role))
         next_id += 1
 
+    includes_v3 = request.settings.include_required_shift_leaders
     if request.settings.include_required_shift_leaders:
         add("FL", "A7", "V1")
         add("FL", "A14", "V2")
         add("FL", "A21", "V3")
 
-    night_without_v3 = max(0, request.settings.required_night_fl_count - 1)
+    night_without_v3 = max(0, request.settings.required_night_fl_count - (1 if includes_v3 else 0))
     for _ in range(night_without_v3):
         add("FL", "A21", None)
 
@@ -227,6 +228,13 @@ def calculate(request: CalculatorRequest) -> CalculatorResponse:
     remaining_fl = request.fl_count - minimum_required_fl
     remaining_acs = request.acs_count
     allowed_shifts = [shift.code for shift in request.settings.shifts]
+    max_people_by_shift = {"A21": request.settings.required_night_fl_count}
+
+    def shift_has_capacity(candidate_people: list[PersonState], shift_code: str) -> bool:
+        max_people = max_people_by_shift.get(shift_code)
+        if max_people is None:
+            return True
+        return sum(1 for person in candidate_people if person.shift == shift_code) < max_people
 
     def current_score(candidate_people: list[PersonState]) -> int:
         return build_schedule(
@@ -244,6 +252,8 @@ def calculate(request: CalculatorRequest) -> CalculatorResponse:
         best_person: PersonState | None = None
         best_score = -1
         for shift_code in allowed_shifts:
+            if not shift_has_capacity(people, shift_code):
+                continue
             candidate = PersonState(id=label_for_person(next_id), license=license_name, shift=shift_code)
             score = current_score(people + [candidate])
             if score > best_score:
@@ -262,7 +272,14 @@ def calculate(request: CalculatorRequest) -> CalculatorResponse:
         request.settings.rest_after_max_consecutive_hours,
     )
 
-    notes.append("Prva verzija uporablja hitro generiranje izmen in izvedljiv urni razpored, ne še polnega matematičnega solverja.")
+    notes.append("Generator spoštuje delovne ure izmen: npr. A7 je na voljo samo 07–14, A21 samo 21–07.")
+    if request.settings.required_night_fl_count == 4 and request.settings.include_required_shift_leaders:
+        notes.append("Nočna izmena je omejena na V3 + 3× A21 (skupaj 4 FL), zato generator ne dodaja dodatnih A21.")
+    else:
+        notes.append(
+            "Nočna izmena je omejena na "
+            f"{request.settings.required_night_fl_count} ljudi v A21; generator ne dodaja dodatnih A21."
+        )
     notes.append("FMP je dovoljen kot sektorski kontrolor, vendar ima pri izbiri delavcev slabšo prioriteto.")
 
     response_people = [
@@ -278,7 +295,12 @@ def calculate(request: CalculatorRequest) -> CalculatorResponse:
     ]
 
     hourly_coverage = [
-        HourlyCoverage(hour=hour_label(slot), open_sectors=len(workers), workers=workers)
+        HourlyCoverage(
+            hour=hour_label(slot),
+            open_sectors=len(workers),
+            workers=workers,
+            sector_workers=workers + [None] * (request.settings.max_sectors_per_hour - len(workers)),
+        )
         for slot, workers in enumerate(scheduled.hourly_workers)
     ]
 
