@@ -28,6 +28,11 @@ async function requestJson<T>(path: string, options?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const message = await response.text();
+    if (response.status === 504) {
+      throw new Error(
+        'API je prekinil zahtevo zaradi časovne omejitve (504). To običajno pomeni, da je bil izračun predolgo v teku, ne nujno da rešitev ne obstaja.',
+      );
+    }
     throw new Error(message || `API napaka ${response.status}`);
   }
 

@@ -108,3 +108,169 @@ th, td { padding: 11px 12px; border-bottom: 1px solid #e5edf4; }
   .coverage-row { grid-template-columns: 1fr 36px; }
   .coverage-hour { grid-column: 1 / -1; }
 }
+
+.schedule-scroll {
+  overflow-x: auto;
+  border: 1px solid #e1eaf2;
+  border-radius: 20px;
+  background: #f7fbfe;
+}
+
+.schedule-grid {
+  display: grid;
+  min-width: 720px;
+}
+
+.schedule-cell {
+  min-height: 48px;
+  padding: 10px 12px;
+  border-right: 1px solid #e1eaf2;
+  border-bottom: 1px solid #e1eaf2;
+  display: grid;
+  align-content: center;
+  gap: 2px;
+  font-weight: 800;
+  color: #223149;
+  background: #fff;
+}
+
+.schedule-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  color: #5d6f84;
+  background: #eef6fb;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.74rem;
+}
+
+.sticky-col {
+  position: sticky;
+  left: 0;
+  z-index: 3;
+  box-shadow: 8px 0 16px rgba(24, 44, 70, 0.06);
+}
+
+.schedule-hour {
+  color: #526276;
+  background: #f8fbfd;
+}
+
+.schedule-cell.assigned {
+  background: linear-gradient(135deg, #effaf7, #edf6ff);
+}
+
+.schedule-cell.closed {
+  color: #98a6b7;
+  background: #f3f6f9;
+  font-weight: 700;
+}
+
+.schedule-cell small {
+  color: #60748b;
+  font-weight: 750;
+}
+
+.position-line {
+  display: block;
+  line-height: 1.35;
+}
+
+.demand-card {
+  margin-top: 18px;
+  padding: 16px;
+  border-radius: 20px;
+  background: #f3f8fc;
+  border: 1px solid #dce8f2;
+}
+
+.demand-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.demand-header h3 {
+  margin: 0;
+  color: #1f2c3e;
+  letter-spacing: -0.03em;
+}
+
+.compact-button {
+  padding: 8px 10px;
+  white-space: nowrap;
+}
+
+.demand-help {
+  margin: 0 0 12px;
+  color: #60748b;
+  font-size: 0.9rem;
+  line-height: 1.35;
+}
+
+.demand-scroll {
+  max-height: 420px;
+  overflow: auto;
+  border: 1px solid #d8e5ef;
+  border-radius: 16px;
+  background: white;
+}
+
+.demand-grid {
+  display: grid;
+  min-width: 420px;
+}
+
+.demand-cell {
+  min-height: 38px;
+  border: 0;
+  border-right: 1px solid #e1eaf2;
+  border-bottom: 1px solid #e1eaf2;
+  display: grid;
+  place-items: center;
+  background: white;
+  color: #526276;
+  font-weight: 800;
+  font-size: 0.78rem;
+}
+
+.demand-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #eaf3f9;
+  color: #5d6f84;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.demand-hour {
+  justify-items: start;
+  padding-left: 8px;
+  background: #f8fbfd;
+  color: #526276;
+}
+
+.demand-toggle {
+  cursor: pointer;
+  color: #9aa8b8;
+}
+
+.demand-toggle.selected {
+  color: white;
+  background: #2a84bd;
+}
+
+.schedule-cell {
+  overflow: hidden;
+  font-size: 0.82rem;
+}
+
+.position-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
