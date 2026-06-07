@@ -68,3 +68,32 @@ def test_codespaces_origin_is_allowed_on_api_response():
     )
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == "https://example-codespace-5173.app.github.dev"
+
+
+def test_default_night_shift_is_limited_to_v3_plus_three_a21():
+    result = calculate(make_request())
+    assert result.feasible is True
+    assert sum(1 for person in result.people if person.shift == "A21") == 4
+    assert result.minimum_required_fl == 7
+    assert result.max_sector_hours < 120
+
+
+def test_workers_are_only_scheduled_inside_their_shift_hours():
+    result = calculate(make_request())
+    people_by_id = {person.id: person for person in result.people}
+    shift_by_code = {shift.code: shift for shift in DEFAULT_SHIFTS}
+
+    for slot, coverage in enumerate(result.hourly_coverage):
+        for worker_id in coverage.workers:
+            person = people_by_id[worker_id]
+            shift = shift_by_code[person.shift]
+            valid_slots = {
+                ((shift.start_hour + offset - 7) % 24) for offset in range(shift.duration_hours)
+            }
+            assert slot in valid_slots
+
+
+def test_hourly_coverage_includes_sector_slots():
+    result = calculate(make_request())
+    assert all(len(hour.sector_workers) == 5 for hour in result.hourly_coverage)
+    assert all(hour.sector_workers[: hour.open_sectors] == hour.workers for hour in result.hourly_coverage)

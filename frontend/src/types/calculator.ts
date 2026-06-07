@@ -41,6 +41,7 @@ export interface HourlyCoverage {
   hour: string;
   open_sectors: number;
   workers: string[];
+  sector_workers: (string | null)[];
 }
 
 export interface CalculatorResponse {

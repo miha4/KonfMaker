@@ -50,6 +50,7 @@ class HourlyCoverage(BaseModel):
     hour: str
     open_sectors: int
     workers: list[str]
+    sector_workers: list[str | None]
 
 
 class CalculatorResponse(BaseModel):
