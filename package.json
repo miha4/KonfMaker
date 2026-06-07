@@ -1,0 +1,9 @@
+{
+  "name": "konfmaker",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "start": "./scripts/start-codespaces.sh",
+    "dev": "./scripts/start-codespaces.sh"
+  }
+}
