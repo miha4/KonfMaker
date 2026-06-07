@@ -17,16 +17,31 @@ class CalculatorSettings(BaseModel):
 
 
 class CalculatorRequest(BaseModel):
-    total_people: int = Field(ge=1, le=80)
+    calculation_mode: str = "staff_to_coverage"
+    total_people: int = Field(ge=0, le=80)
     fl_count: int = Field(ge=0, le=80)
+    aps_count: int = Field(default=0, ge=0, le=80)
     acs_count: int = Field(ge=0, le=80)
     include_fmp: bool = True
     settings: CalculatorSettings
+    requested_sector_counts: list[int] | None = None
 
     @model_validator(mode="after")
     def counts_must_match(self) -> "CalculatorRequest":
-        if self.fl_count + self.acs_count != self.total_people:
-            raise ValueError("FL + ACS mora biti enako skupnemu številu ljudi.")
+        if self.calculation_mode not in {"staff_to_coverage", "demand_to_staff"}:
+            raise ValueError("Neznan način izračuna.")
+        if self.calculation_mode == "staff_to_coverage" and self.total_people < 1:
+            raise ValueError("Skupno število ljudi mora biti večje od 0.")
+        if self.calculation_mode == "staff_to_coverage" and self.fl_count + self.aps_count + self.acs_count != self.total_people:
+            raise ValueError("FL + APS + ACS mora biti enako skupnemu številu ljudi.")
+        if self.requested_sector_counts is not None:
+            if len(self.requested_sector_counts) != 24:
+                raise ValueError("Vnos želene odprtosti mora imeti 24 urnih vrednosti.")
+            if any(
+                count < 0 or count > self.settings.max_sectors_per_hour
+                for count in self.requested_sector_counts
+            ):
+                raise ValueError("Želena odprtost mora biti med 0 in največ sektorji hkrati.")
         return self
 
 
@@ -42,19 +57,28 @@ class VirtualPerson(BaseModel):
 class ShiftSummary(BaseModel):
     shift: str
     fl: int
+    aps: int = 0
     acs: int
     total: int
+
+
+class SectorAssignment(BaseModel):
+    lower_worker: str
+    upper_worker: str
 
 
 class HourlyCoverage(BaseModel):
     hour: str
     open_sectors: int
     workers: list[str]
+    sector_workers: list[SectorAssignment | None]
 
 
 class CalculatorResponse(BaseModel):
     feasible: bool
     max_sector_hours: int
+    requested_sector_hours: int = 0
+    missing_sector_hours: int = 0
     minimum_required_fl: int
     unused_people: int
     people: list[VirtualPerson]
