@@ -1,21 +1,35 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, Request, Response
 
 from .calculator import DEFAULT_SHIFTS, calculate
 from .models import CalculatorRequest
 
 app = FastAPI(title="KonfMaker API", version="0.1.0")
 
-app.add_middleware(
-    CORSMiddleware,
-    # Development API: allow browser requests from local dev servers and
-    # GitHub Codespaces forwarded URLs. The app does not use cookies or
-    # credentialed API requests, so wildcard CORS is safe for this MVP.
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+
+def development_cors_headers(request: Request) -> dict[str, str]:
+    origin = request.headers.get("origin") or "*"
+    requested_headers = request.headers.get("access-control-request-headers") or "*"
+    return {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": requested_headers,
+        "Access-Control-Max-Age": "86400",
+        "Vary": "Origin",
+    }
+
+
+@app.middleware("http")
+async def add_development_cors_headers(request: Request, call_next):
+    # Codespaces exposes frontend and backend on different forwarded hosts.
+    # This MVP API does not use cookies or credentialed requests, so the
+    # development server can safely allow browser API calls from those hosts.
+    if request.method == "OPTIONS":
+        return Response(status_code=204, headers=development_cors_headers(request))
+
+    response = await call_next(request)
+    for header, value in development_cors_headers(request).items():
+        response.headers.setdefault(header, value)
+    return response
 
 
 @app.get("/api/health")
