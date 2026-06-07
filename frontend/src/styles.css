@@ -176,3 +176,101 @@ th, td { padding: 11px 12px; border-bottom: 1px solid #e5edf4; }
   display: block;
   line-height: 1.35;
 }
+
+.demand-card {
+  margin-top: 18px;
+  padding: 16px;
+  border-radius: 20px;
+  background: #f3f8fc;
+  border: 1px solid #dce8f2;
+}
+
+.demand-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.demand-header h3 {
+  margin: 0;
+  color: #1f2c3e;
+  letter-spacing: -0.03em;
+}
+
+.compact-button {
+  padding: 8px 10px;
+  white-space: nowrap;
+}
+
+.demand-help {
+  margin: 0 0 12px;
+  color: #60748b;
+  font-size: 0.9rem;
+  line-height: 1.35;
+}
+
+.demand-scroll {
+  max-height: 420px;
+  overflow: auto;
+  border: 1px solid #d8e5ef;
+  border-radius: 16px;
+  background: white;
+}
+
+.demand-grid {
+  display: grid;
+  min-width: 420px;
+}
+
+.demand-cell {
+  min-height: 38px;
+  border: 0;
+  border-right: 1px solid #e1eaf2;
+  border-bottom: 1px solid #e1eaf2;
+  display: grid;
+  place-items: center;
+  background: white;
+  color: #526276;
+  font-weight: 800;
+  font-size: 0.78rem;
+}
+
+.demand-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #eaf3f9;
+  color: #5d6f84;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.demand-hour {
+  justify-items: start;
+  padding-left: 8px;
+  background: #f8fbfd;
+  color: #526276;
+}
+
+.demand-toggle {
+  cursor: pointer;
+  color: #9aa8b8;
+}
+
+.demand-toggle.selected {
+  color: white;
+  background: #2a84bd;
+}
+
+.schedule-cell {
+  overflow: hidden;
+  font-size: 0.82rem;
+}
+
+.position-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

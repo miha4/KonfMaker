@@ -23,11 +23,20 @@ class CalculatorRequest(BaseModel):
     acs_count: int = Field(ge=0, le=80)
     include_fmp: bool = True
     settings: CalculatorSettings
+    requested_sector_counts: list[int] | None = None
 
     @model_validator(mode="after")
     def counts_must_match(self) -> "CalculatorRequest":
         if self.fl_count + self.aps_count + self.acs_count != self.total_people:
             raise ValueError("FL + APS + ACS mora biti enako skupnemu številu ljudi.")
+        if self.requested_sector_counts is not None:
+            if len(self.requested_sector_counts) != 24:
+                raise ValueError("Vnos želene odprtosti mora imeti 24 urnih vrednosti.")
+            if any(
+                count < 0 or count > self.settings.max_sectors_per_hour
+                for count in self.requested_sector_counts
+            ):
+                raise ValueError("Želena odprtost mora biti med 0 in največ sektorji hkrati.")
         return self
 
 

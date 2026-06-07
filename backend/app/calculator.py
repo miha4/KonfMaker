@@ -131,7 +131,7 @@ def position_preference(person: PersonState, position: str) -> int:
 def build_schedule(
     people: list[PersonState],
     shift_map: dict[str, ShiftRule],
-    max_sectors_per_hour: int,
+    target_sector_counts: list[int],
     max_consecutive: int,
     rest_after_max: int,
 ) -> ScheduledResult:
@@ -166,7 +166,7 @@ def build_schedule(
                 upper.id,
             )
 
-        while len(scheduled_sectors) < max_sectors_per_hour:
+        while len(scheduled_sectors) < target_sector_counts[slot]:
             candidates = [person for person in people if available_for_current_slot(person)]
             lower_candidates = [person for person in candidates if can_fill_position(person, "lower")]
             upper_candidates = [person for person in candidates if can_fill_position(person, "upper")]
@@ -254,8 +254,15 @@ def create_mandatory_people(request: CalculatorRequest) -> tuple[list[PersonStat
     return people, next_id, warnings
 
 
+def target_sector_counts_for_request(request: CalculatorRequest) -> list[int]:
+    if request.requested_sector_counts is None:
+        return [request.settings.max_sectors_per_hour] * HOURS_IN_DAY
+    return request.requested_sector_counts
+
+
 def calculate(request: CalculatorRequest) -> CalculatorResponse:
     shift_map = {shift.code: shift for shift in request.settings.shifts}
+    target_sector_counts = target_sector_counts_for_request(request)
     notes: list[str] = []
     mandatory_people, next_id, warnings = create_mandatory_people(request)
     minimum_required_fl = sum(1 for person in mandatory_people if person.license == "FL")
@@ -290,7 +297,7 @@ def calculate(request: CalculatorRequest) -> CalculatorResponse:
         return build_schedule(
             candidate_people,
             shift_map,
-            request.settings.max_sectors_per_hour,
+            target_sector_counts,
             request.settings.max_consecutive_work_hours,
             request.settings.rest_after_max_consecutive_hours,
         ).total_hours
@@ -317,7 +324,7 @@ def calculate(request: CalculatorRequest) -> CalculatorResponse:
     scheduled = build_schedule(
         people,
         shift_map,
-        request.settings.max_sectors_per_hour,
+        target_sector_counts,
         request.settings.max_consecutive_work_hours,
         request.settings.rest_after_max_consecutive_hours,
     )
@@ -330,6 +337,7 @@ def calculate(request: CalculatorRequest) -> CalculatorResponse:
             "Nočna izmena je omejena na "
             f"{request.settings.required_night_fl_count} ljudi v A21; generator ne dodaja dodatnih A21."
         )
+    notes.append("Kalkulator odpira največ toliko sektorjev, kot jih uporabnik označi v urnem vnosu želene odprtosti.")
     notes.append("Vsak odprt sektor potrebuje spodnjega kontrolorja (APS ali FL) in zgornjega kontrolorja (ACS ali FL).")
     notes.append("FMP je dovoljen kot sektorski kontrolor, vendar ima pri izbiri delavcev slabšo prioriteto.")
 

@@ -5,7 +5,7 @@ from app.main import app
 from app.models import CalculatorRequest, CalculatorSettings
 
 
-def make_request(total=28, fl=12, aps=0, acs=16, fmp=True):
+def make_request(total=28, fl=12, aps=0, acs=16, fmp=True, requested_sector_counts=None):
     return CalculatorRequest(
         total_people=total,
         fl_count=fl,
@@ -20,6 +20,7 @@ def make_request(total=28, fl=12, aps=0, acs=16, fmp=True):
             required_night_fl_count=4,
             shifts=DEFAULT_SHIFTS,
         ),
+        requested_sector_counts=requested_sector_counts,
     )
 
 
@@ -120,3 +121,16 @@ def test_each_open_sector_has_lower_and_upper_qualified_controllers():
             assert people_by_id[sector.lower_worker].license in {"APS", "FL"}
             assert people_by_id[sector.upper_worker].license in {"ACS", "FL"}
             assert sector.lower_worker != sector.upper_worker
+
+
+def test_requested_sector_counts_limit_open_sectors_by_hour():
+    requested = [0] * 24
+    requested[0] = 2
+    requested[1] = 4
+
+    result = calculate(make_request(requested_sector_counts=requested))
+
+    assert result.hourly_coverage[0].open_sectors <= 2
+    assert result.hourly_coverage[1].open_sectors <= 4
+    assert all(hour.open_sectors == 0 for hour in result.hourly_coverage[2:])
+    assert result.max_sector_hours <= sum(requested)

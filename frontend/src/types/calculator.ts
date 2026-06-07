@@ -20,6 +20,7 @@ export interface CalculatorRequest {
   acs_count: number;
   include_fmp: boolean;
   settings: CalculatorSettings;
+  requested_sector_counts: number[];
 }
 
 export interface VirtualPerson {
