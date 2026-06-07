@@ -6,8 +6,9 @@ from app.main import app
 from app.models import CalculatorRequest, CalculatorSettings
 
 
-def make_request(total=28, fl=12, aps=0, acs=16, fmp=True, requested_sector_counts=None):
+def make_request(total=28, fl=12, aps=0, acs=16, fmp=True, requested_sector_counts=None, calculation_mode="staff_to_coverage"):
     return CalculatorRequest(
+        calculation_mode=calculation_mode,
         total_people=total,
         fl_count=fl,
         aps_count=aps,
@@ -152,3 +153,14 @@ def test_generator_runs_final_scheduler_once(monkeypatch):
 
     assert result.feasible is True
     assert calls == 1
+
+
+def test_demand_to_staff_generates_people_for_requested_opening():
+    requested = [1] * 24
+
+    result = calculate(make_request(total=0, fl=0, aps=0, acs=0, requested_sector_counts=requested, calculation_mode="demand_to_staff"))
+
+    assert len(result.people) > 0
+    assert result.requested_sector_hours == sum(requested)
+    assert result.max_sector_hours > 0
+    assert result.minimum_required_fl >= 0

@@ -14,6 +14,7 @@ export interface CalculatorSettings {
 }
 
 export interface CalculatorRequest {
+  calculation_mode: 'staff_to_coverage' | 'demand_to_staff';
   total_people: number;
   fl_count: number;
   aps_count: number;
@@ -55,6 +56,8 @@ export interface HourlyCoverage {
 export interface CalculatorResponse {
   feasible: boolean;
   max_sector_hours: number;
+  requested_sector_hours: number;
+  missing_sector_hours: number;
   minimum_required_fl: number;
   unused_people: number;
   people: VirtualPerson[];

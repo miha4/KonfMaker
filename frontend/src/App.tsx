@@ -25,6 +25,55 @@ const fallbackSettings: CalculatorSettings = {
 };
 
 type Tab = 'calculator' | 'settings';
+type CalculationMode = 'staff_to_coverage' | 'demand_to_staff';
+
+const DAY_START = 7;
+const HOURS_IN_DAY = 24;
+
+function buildHourLabels(): string[] {
+  return Array.from({ length: HOURS_IN_DAY }, (_, index) => {
+    const start = (DAY_START + index) % HOURS_IN_DAY;
+    const end = (start + 1) % HOURS_IN_DAY;
+    return `${start.toString().padStart(2, '0')}:00–${end.toString().padStart(2, '0')}:00`;
+  });
+}
+
+function createDefaultSectorDemand(maxSectors: number): number[] {
+  return Array.from({ length: HOURS_IN_DAY }, () => maxSectors);
+}
+
+function buildWeightedSectorDemand(
+  maxSectors: number,
+  baseSectors: number,
+  fourSectorHours: number,
+  fourSectorFrom: number,
+  fiveSectorHours: number,
+  fiveSectorFrom: number,
+): number[] {
+  const demand = Array.from({ length: HOURS_IN_DAY }, () => clamp(baseSectors, 0, maxSectors));
+
+  for (let offset = 0; offset < fiveSectorHours; offset += 1) {
+    const slot = (fiveSectorFrom + offset) % HOURS_IN_DAY;
+    demand[slot] = Math.max(demand[slot], Math.min(5, maxSectors));
+  }
+
+  for (let offset = 0; offset < fourSectorHours; offset += 1) {
+    const slot = (fourSectorFrom + offset) % HOURS_IN_DAY;
+    demand[slot] = Math.max(demand[slot], Math.min(4, maxSectors));
+  }
+
+  return demand;
+}
+
+function clampSectorDemand(demand: number[], maxSectors: number): number[] {
+  return Array.from({ length: HOURS_IN_DAY }, (_, index) => clamp(demand[index] ?? maxSectors, 0, maxSectors));
+}
+
+const hourLabels = buildHourLabels();
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
 
 const DAY_START = 7;
 const HOURS_IN_DAY = 24;
@@ -311,7 +360,7 @@ function Results({ result }: { result: CalculatorResponse | null }) {
     );
   }
 
-  if (!result.feasible) {
+  if (!result.feasible && result.people.length === 0) {
     return (
       <section className="panel error-state">
         <p className="eyebrow">Konfiguracija ni izvedljiva</p>
@@ -336,6 +385,14 @@ function Results({ result }: { result: CalculatorResponse | null }) {
         <div className="metric-card">
           <span>Minimalno obveznih FL</span>
           <strong>{result.minimum_required_fl}</strong>
+        </div>
+        <div className="metric-card">
+          <span>Zahtevane sektorske ure</span>
+          <strong>{result.requested_sector_hours}</strong>
+        </div>
+        <div className="metric-card">
+          <span>Manjkajoče ure</span>
+          <strong>{result.missing_sector_hours}</strong>
         </div>
         <div className="metric-card">
           <span>Neuporabljeni ljudje</span>
@@ -436,10 +493,16 @@ function Results({ result }: { result: CalculatorResponse | null }) {
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>('calculator');
   const [settings, setSettings] = useState<CalculatorSettings>(fallbackSettings);
+  const [calculationMode, setCalculationMode] = useState<CalculationMode>('staff_to_coverage');
   const [totalPeople, setTotalPeople] = useState(28);
   const [flCount, setFlCount] = useState(12);
   const [apsCount, setApsCount] = useState(0);
   const [sectorDemand, setSectorDemand] = useState(() => createDefaultSectorDemand(fallbackSettings.max_sectors_per_hour));
+  const [baseSectors, setBaseSectors] = useState(3);
+  const [fourSectorHours, setFourSectorHours] = useState(3);
+  const [fourSectorFrom, setFourSectorFrom] = useState(8);
+  const [fiveSectorHours, setFiveSectorHours] = useState(1);
+  const [fiveSectorFrom, setFiveSectorFrom] = useState(10);
   const [includeFmp, setIncludeFmp] = useState(true);
   const [result, setResult] = useState<CalculatorResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -454,9 +517,24 @@ export default function App() {
       });
   }, []);
 
+  const weightedSectorDemand = useMemo(
+    () => buildWeightedSectorDemand(
+      settings.max_sectors_per_hour,
+      baseSectors,
+      fourSectorHours,
+      fourSectorFrom,
+      fiveSectorHours,
+      fiveSectorFrom,
+    ),
+    [baseSectors, fourSectorFrom, fourSectorHours, fiveSectorFrom, fiveSectorHours, settings.max_sectors_per_hour],
+  );
+
   const effectiveSectorDemand = useMemo(
-    () => clampSectorDemand(sectorDemand, settings.max_sectors_per_hour),
-    [sectorDemand, settings.max_sectors_per_hour],
+    () => clampSectorDemand(
+      calculationMode === 'demand_to_staff' ? sectorDemand : weightedSectorDemand,
+      settings.max_sectors_per_hour,
+    ),
+    [calculationMode, sectorDemand, settings.max_sectors_per_hour, weightedSectorDemand],
   );
 
   const acsCount = useMemo(() => Math.max(0, totalPeople - flCount - apsCount), [apsCount, flCount, totalPeople]);
@@ -474,7 +552,8 @@ export default function App() {
     setIsLoading(true);
     setError(null);
     const payload: CalculatorRequest = {
-      total_people: totalPeople,
+      calculation_mode: calculationMode,
+      total_people: calculationMode === 'demand_to_staff' ? 0 : totalPeople,
       fl_count: flCount,
       aps_count: apsCount,
       acs_count: acsCount,
@@ -524,7 +603,24 @@ export default function App() {
         <div className="workspace">
           <section className="panel form-panel">
             <p className="eyebrow">Vhodni podatki</p>
-            <h2>Dnevna sestava ljudi</h2>
+            <h2>{calculationMode === 'staff_to_coverage' ? 'Dnevna sestava ljudi' : 'Želena odprtost'}</h2>
+            <div className="mode-switch">
+              <button
+                className={calculationMode === 'staff_to_coverage' ? 'active' : ''}
+                onClick={() => setCalculationMode('staff_to_coverage')}
+                type="button"
+              >
+                1. Iz ljudi
+              </button>
+              <button
+                className={calculationMode === 'demand_to_staff' ? 'active' : ''}
+                onClick={() => setCalculationMode('demand_to_staff')}
+                type="button"
+              >
+                2. Iz odprtosti
+              </button>
+            </div>
+            {calculationMode === 'staff_to_coverage' ? (
             <div className="form-grid">
               <NumberField
                 label="Skupaj ljudi"
@@ -556,11 +652,32 @@ export default function App() {
                 helper="ACS = skupaj − FL − APS. Zgornji kontrolor: ACS ali FL."
               />
             </div>
-            <SectorDemandInput
-              maxSectors={settings.max_sectors_per_hour}
-              values={effectiveSectorDemand}
-              onChange={(values) => setSectorDemand(clampSectorDemand(values, settings.max_sectors_per_hour))}
-            />
+            ) : null}
+
+            {calculationMode === 'staff_to_coverage' ? (
+              <section className="demand-card">
+                <div className="demand-header">
+                  <div>
+                    <p className="eyebrow">Uteži odprtosti</p>
+                    <h3>Kako naj razporedi odprtost</h3>
+                  </div>
+                </div>
+                <div className="form-grid mini-form-grid">
+                  <NumberField label="Osnovno sektorjev" min={0} max={settings.max_sectors_per_hour} value={baseSectors} onChange={setBaseSectors} />
+                  <NumberField label="4 sektorji - št. ur" min={0} max={24} value={fourSectorHours} onChange={setFourSectorHours} />
+                  <NumberField label="4 sektorji - od ure" min={0} max={23} value={fourSectorFrom} onChange={setFourSectorFrom} />
+                  <NumberField label="5 sektorjev - št. ur" min={0} max={24} value={fiveSectorHours} onChange={setFiveSectorHours} />
+                  <NumberField label="5 sektorjev - od ure" min={0} max={23} value={fiveSectorFrom} onChange={setFiveSectorFrom} />
+                </div>
+                <p className="demand-help">To ustvari ciljno odprtost: osnovna enakomerna odprtost + izbrane špice za 4/5 sektorjev.</p>
+              </section>
+            ) : (
+              <SectorDemandInput
+                maxSectors={settings.max_sectors_per_hour}
+                values={effectiveSectorDemand}
+                onChange={(values) => setSectorDemand(clampSectorDemand(values, settings.max_sectors_per_hour))}
+              />
+            )}
             <label className="check-row fmp-row">
               <input type="checkbox" checked={includeFmp} onChange={(event) => setIncludeFmp(event.target.checked)} />
               <span>Vključi FMP kot A9/FL. FMP se uporabi na sektorju samo, če je koristno.</span>

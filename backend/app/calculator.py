@@ -297,75 +297,14 @@ def generated_shift_key(
     return (demand_score - assigned_to_shift * 2, demand_score, -assigned_to_shift, shift_code)
 
 
-def calculate(request: CalculatorRequest) -> CalculatorResponse:
-    shift_map = {shift.code: shift for shift in request.settings.shifts}
-    target_sector_counts = target_sector_counts_for_request(request)
-    notes: list[str] = []
-    mandatory_people, next_id, warnings = create_mandatory_people(request)
-    minimum_required_fl = sum(1 for person in mandatory_people if person.license == "FL")
-
-    if request.fl_count < minimum_required_fl:
-        return CalculatorResponse(
-            feasible=False,
-            max_sector_hours=0,
-            minimum_required_fl=minimum_required_fl,
-            unused_people=request.total_people,
-            people=[],
-            shift_summary=[],
-            hourly_coverage=[],
-            notes=[f"Potrebnih je najmanj {minimum_required_fl} FL za V1/V2/V3, noč in FMP."],
-            warnings=warnings,
-        )
-
-    people = list(mandatory_people)
-    remaining_fl = request.fl_count - minimum_required_fl
-    remaining_aps = request.aps_count
-    remaining_acs = request.acs_count
-    allowed_shifts = [shift.code for shift in request.settings.shifts]
-    max_people_by_shift = {"A21": request.settings.required_night_fl_count}
-
-    def shift_has_capacity(candidate_people: list[PersonState], shift_code: str) -> bool:
-        max_people = max_people_by_shift.get(shift_code)
-        if max_people is None:
-            return True
-        return sum(1 for person in candidate_people if person.shift == shift_code) < max_people
-
-    # Fast generator: rank shifts with a cheap demand/load heuristic, then run the
-    # real paired-sector scheduler once at the end. The previous version simulated
-    # a full 24-hour schedule for every person/shift candidate, which could keep
-    # the API busy long enough for a 504 timeout.
-    remaining_licenses = ["APS"] * remaining_aps + ["ACS"] * remaining_acs + ["FL"] * remaining_fl
-    for license_name in remaining_licenses:
-        eligible_shifts = [shift_code for shift_code in allowed_shifts if shift_has_capacity(people, shift_code)]
-        if not eligible_shifts:
-            break
-        best_shift = max(
-            eligible_shifts,
-            key=lambda shift_code: generated_shift_key(shift_code, shift_map, target_sector_counts, people),
-        )
-        people.append(PersonState(id=label_for_person(next_id), license=license_name, shift=best_shift))
-        next_id += 1
-
-    scheduled = build_schedule(
-        people,
-        shift_map,
-        target_sector_counts,
-        request.settings.max_consecutive_work_hours,
-        request.settings.rest_after_max_consecutive_hours,
-    )
-
-    notes.append("Generator spoštuje delovne ure izmen: npr. A7 je na voljo samo 07–14, A21 samo 21–07.")
-    if request.settings.required_night_fl_count == 4 and request.settings.include_required_shift_leaders:
-        notes.append("Nočna izmena je omejena na V3 + 3× A21 (skupaj 4 FL), zato generator ne dodaja dodatnih A21.")
-    else:
-        notes.append(
-            "Nočna izmena je omejena na "
-            f"{request.settings.required_night_fl_count} ljudi v A21; generator ne dodaja dodatnih A21."
-        )
-    notes.append("Kalkulator odpira največ toliko sektorjev, kot jih uporabnik označi v urnem vnosu želene odprtosti.")
-    notes.append("Vsak odprt sektor potrebuje spodnjega kontrolorja (APS ali FL) in zgornjega kontrolorja (ACS ali FL).")
-    notes.append("FMP je dovoljen kot sektorski kontrolor, vendar ima pri izbiri delavcev slabšo prioriteto.")
-
+def response_from_schedule(
+    scheduled: ScheduledResult,
+    request: CalculatorRequest,
+    minimum_required_fl: int,
+    notes: list[str],
+    warnings: list[str],
+    requested_sector_hours: int,
+) -> CalculatorResponse:
     response_people = [
         VirtualPerson(
             id=person.id,
@@ -393,10 +332,13 @@ def calculate(request: CalculatorRequest) -> CalculatorResponse:
     ]
 
     unused_people = len([person for person in scheduled.people if person.sector_hours == 0])
+    missing_sector_hours = max(0, requested_sector_hours - scheduled.total_hours)
 
     return CalculatorResponse(
-        feasible=True,
+        feasible=missing_sector_hours == 0,
         max_sector_hours=scheduled.total_hours,
+        requested_sector_hours=requested_sector_hours,
+        missing_sector_hours=missing_sector_hours,
         minimum_required_fl=minimum_required_fl,
         unused_people=unused_people,
         people=response_people,
@@ -404,4 +346,178 @@ def calculate(request: CalculatorRequest) -> CalculatorResponse:
         hourly_coverage=hourly_coverage,
         notes=notes,
         warnings=warnings,
+    )
+
+
+def choose_generated_person(
+    next_id: int,
+    license_name: str,
+    people: list[PersonState],
+    allowed_shifts: list[str],
+    shift_map: dict[str, ShiftRule],
+    target_sector_counts: list[int],
+    max_people_by_shift: dict[str, int],
+) -> PersonState | None:
+    def shift_has_capacity(shift_code: str) -> bool:
+        max_people = max_people_by_shift.get(shift_code)
+        if max_people is None:
+            return True
+        return sum(1 for person in people if person.shift == shift_code) < max_people
+
+    eligible_shifts = [shift_code for shift_code in allowed_shifts if shift_has_capacity(shift_code)]
+    if not eligible_shifts:
+        return None
+
+    best_shift = max(
+        eligible_shifts,
+        key=lambda shift_code: generated_shift_key(shift_code, shift_map, target_sector_counts, people),
+    )
+    return PersonState(id=label_for_person(next_id), license=license_name, shift=best_shift)
+
+
+def calculate_demand_to_staff(
+    request: CalculatorRequest,
+    shift_map: dict[str, ShiftRule],
+    target_sector_counts: list[int],
+) -> CalculatorResponse:
+    notes: list[str] = []
+    mandatory_people, next_id, warnings = create_mandatory_people(request)
+    people = list(mandatory_people)
+    allowed_shifts = [shift.code for shift in request.settings.shifts]
+    max_people_by_shift = {"A21": request.settings.required_night_fl_count}
+    requested_sector_hours = sum(target_sector_counts)
+
+    scheduled = build_schedule(
+        people,
+        shift_map,
+        target_sector_counts,
+        request.settings.max_consecutive_work_hours,
+        request.settings.rest_after_max_consecutive_hours,
+    )
+
+    license_cycle = ["APS", "ACS"]
+    cycle_index = 0
+    while scheduled.total_hours < requested_sector_hours and len(people) < 80:
+        license_name = license_cycle[cycle_index % len(license_cycle)]
+        cycle_index += 1
+        candidate = choose_generated_person(
+            next_id,
+            license_name,
+            people,
+            allowed_shifts,
+            shift_map,
+            target_sector_counts,
+            max_people_by_shift,
+        )
+        if candidate is None:
+            break
+        people.append(candidate)
+        next_id += 1
+        scheduled = build_schedule(
+            people,
+            shift_map,
+            target_sector_counts,
+            request.settings.max_consecutive_work_hours,
+            request.settings.rest_after_max_consecutive_hours,
+        )
+
+    minimum_required_fl = sum(1 for person in mandatory_people if person.license == "FL")
+    notes.append("Način 2 izračuna najnižjo najdeno zasedbo za ročno vneseno odprtost po urah.")
+    notes.append("Izračun dodaja APS/ACS pare po hitri hevristiki in se ustavi, ko doseže zahtevano odprtost ali omejitve.")
+    notes.append("Vsak odprt sektor potrebuje spodnjega kontrolorja (APS ali FL) in zgornjega kontrolorja (ACS ali FL).")
+    if scheduled.total_hours < requested_sector_hours:
+        warnings.append("Znotraj trenutnih pravil ni bilo mogoče pokriti vseh zahtevanih sektorskih ur.")
+
+    return response_from_schedule(
+        scheduled,
+        request,
+        minimum_required_fl,
+        notes,
+        warnings,
+        requested_sector_hours,
+    )
+
+
+def calculate(request: CalculatorRequest) -> CalculatorResponse:
+    shift_map = {shift.code: shift for shift in request.settings.shifts}
+    target_sector_counts = target_sector_counts_for_request(request)
+    if request.calculation_mode == "demand_to_staff":
+        return calculate_demand_to_staff(request, shift_map, target_sector_counts)
+
+    notes: list[str] = []
+    mandatory_people, next_id, warnings = create_mandatory_people(request)
+    minimum_required_fl = sum(1 for person in mandatory_people if person.license == "FL")
+
+    if request.fl_count < minimum_required_fl:
+        return CalculatorResponse(
+            feasible=False,
+            max_sector_hours=0,
+            requested_sector_hours=sum(target_sector_counts),
+            missing_sector_hours=sum(target_sector_counts),
+            minimum_required_fl=minimum_required_fl,
+            unused_people=request.total_people,
+            people=[],
+            shift_summary=[],
+            hourly_coverage=[],
+            notes=[f"Potrebnih je najmanj {minimum_required_fl} FL za V1/V2/V3, noč in FMP."],
+            warnings=warnings,
+        )
+
+    people = list(mandatory_people)
+    remaining_fl = request.fl_count - minimum_required_fl
+    remaining_aps = request.aps_count
+    remaining_acs = request.acs_count
+    allowed_shifts = [shift.code for shift in request.settings.shifts]
+    max_people_by_shift = {"A21": request.settings.required_night_fl_count}
+
+    # Fast generator: rank shifts with a cheap demand/load heuristic, then run the
+    # real paired-sector scheduler once at the end. The previous version simulated
+    # a full 24-hour schedule for every person/shift candidate, which could keep
+    # the API busy long enough for a 504 timeout.
+    remaining_licenses = ["APS"] * remaining_aps + ["ACS"] * remaining_acs + ["FL"] * remaining_fl
+    for license_name in remaining_licenses:
+        candidate = choose_generated_person(
+            next_id,
+            license_name,
+            people,
+            allowed_shifts,
+            shift_map,
+            target_sector_counts,
+            max_people_by_shift,
+        )
+        if candidate is None:
+            break
+        people.append(candidate)
+        next_id += 1
+
+    scheduled = build_schedule(
+        people,
+        shift_map,
+        target_sector_counts,
+        request.settings.max_consecutive_work_hours,
+        request.settings.rest_after_max_consecutive_hours,
+    )
+
+    notes.append("Generator spoštuje delovne ure izmen: npr. A7 je na voljo samo 07–14, A21 samo 21–07.")
+    if request.settings.required_night_fl_count == 4 and request.settings.include_required_shift_leaders:
+        notes.append("Nočna izmena je omejena na V3 + 3× A21 (skupaj 4 FL), zato generator ne dodaja dodatnih A21.")
+    else:
+        notes.append(
+            "Nočna izmena je omejena na "
+            f"{request.settings.required_night_fl_count} ljudi v A21; generator ne dodaja dodatnih A21."
+        )
+    notes.append("Kalkulator odpira največ toliko sektorjev, kot jih uporabnik označi v urnem vnosu želene odprtosti.")
+    notes.append("Vsak odprt sektor potrebuje spodnjega kontrolorja (APS ali FL) in zgornjega kontrolorja (ACS ali FL).")
+    notes.append("FMP je dovoljen kot sektorski kontrolor, vendar ima pri izbiri delavcev slabšo prioriteto.")
+
+    if scheduled.total_hours < sum(target_sector_counts):
+        warnings.append("Z vnesenimi ljudmi ni mogoče pokriti vseh zahtevanih sektorskih ur.")
+
+    return response_from_schedule(
+        scheduled,
+        request,
+        minimum_required_fl,
+        notes,
+        warnings,
+        sum(target_sector_counts),
     )

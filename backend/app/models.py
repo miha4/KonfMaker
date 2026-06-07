@@ -17,7 +17,8 @@ class CalculatorSettings(BaseModel):
 
 
 class CalculatorRequest(BaseModel):
-    total_people: int = Field(ge=1, le=80)
+    calculation_mode: str = "staff_to_coverage"
+    total_people: int = Field(ge=0, le=80)
     fl_count: int = Field(ge=0, le=80)
     aps_count: int = Field(default=0, ge=0, le=80)
     acs_count: int = Field(ge=0, le=80)
@@ -27,7 +28,11 @@ class CalculatorRequest(BaseModel):
 
     @model_validator(mode="after")
     def counts_must_match(self) -> "CalculatorRequest":
-        if self.fl_count + self.aps_count + self.acs_count != self.total_people:
+        if self.calculation_mode not in {"staff_to_coverage", "demand_to_staff"}:
+            raise ValueError("Neznan način izračuna.")
+        if self.calculation_mode == "staff_to_coverage" and self.total_people < 1:
+            raise ValueError("Skupno število ljudi mora biti večje od 0.")
+        if self.calculation_mode == "staff_to_coverage" and self.fl_count + self.aps_count + self.acs_count != self.total_people:
             raise ValueError("FL + APS + ACS mora biti enako skupnemu številu ljudi.")
         if self.requested_sector_counts is not None:
             if len(self.requested_sector_counts) != 24:
@@ -72,6 +77,8 @@ class HourlyCoverage(BaseModel):
 class CalculatorResponse(BaseModel):
     feasible: bool
     max_sector_hours: int
+    requested_sector_hours: int = 0
+    missing_sector_hours: int = 0
     minimum_required_fl: int
     unused_people: int
     people: list[VirtualPerson]

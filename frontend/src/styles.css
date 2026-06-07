@@ -68,7 +68,7 @@ button, input { font: inherit; }
 .empty-state { min-height: 240px; display: grid; place-content: center; text-align: center; color: #64748b; }
 .empty-icon { margin: 0 auto 14px; width: 56px; height: 56px; border-radius: 18px; display: grid; place-items: center; background: #e7f1f8; color: #2a84bd; font-size: 2rem; }
 .results-stack { display: grid; gap: 18px; }
-.metrics-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 14px; }
 .metric-card { padding: 20px; border-radius: 24px; background: white; border: 1px solid #dfe8f0; box-shadow: 0 12px 35px rgba(24, 44, 70, 0.08); }
 .metric-card span { display: block; color: #64748b; font-weight: 750; margin-bottom: 8px; }
 .metric-card strong { font-size: 2.4rem; letter-spacing: -0.06em; }
@@ -273,4 +273,33 @@ th, td { padding: 11px 12px; border-bottom: 1px solid #e5edf4; }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.mode-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 6px;
+  margin-bottom: 16px;
+  border-radius: 18px;
+  background: #edf5fa;
+}
+
+.mode-switch button {
+  border: 0;
+  border-radius: 13px;
+  padding: 10px 12px;https://github.com/miha4/KonfMaker/pull/12/conflict?name=frontend%252Fsrc%252Fstyles.css&ancestor_oid=63ad6af48955d0d6d2da7dcbfe223c08e12bc5bf&base_oid=ec9f059ce93d766eb3d640402761698efae7d287&head_oid=ccc953571fa8d5a7da3739ba773bade90f96ca3a
+  cursor: pointer;
+  color: #506174;
+  background: transparent;
+  font-weight: 850;
+}
+
+.mode-switch button.active {
+  color: white;
+  background: #17365d;
+}
+
+.mini-form-grid {
+  grid-template-columns: 1fr;
 }
