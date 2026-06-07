@@ -75,6 +75,31 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
+const DAY_START = 7;
+const HOURS_IN_DAY = 24;
+
+function buildHourLabels(): string[] {
+  return Array.from({ length: HOURS_IN_DAY }, (_, index) => {
+    const start = (DAY_START + index) % HOURS_IN_DAY;
+    const end = (start + 1) % HOURS_IN_DAY;
+    return `${start.toString().padStart(2, '0')}:00–${end.toString().padStart(2, '0')}:00`;
+  });
+}
+
+function createDefaultSectorDemand(maxSectors: number): number[] {
+  return Array.from({ length: HOURS_IN_DAY }, () => maxSectors);
+}
+
+function clampSectorDemand(demand: number[], maxSectors: number): number[] {
+  return Array.from({ length: HOURS_IN_DAY }, (_, index) => clamp(demand[index] ?? maxSectors, 0, maxSectors));
+}
+
+const hourLabels = buildHourLabels();
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
 function NumberField({
   label,
   value,
