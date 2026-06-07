@@ -14,16 +14,19 @@ export interface CalculatorSettings {
 }
 
 export interface CalculatorRequest {
+  calculation_mode: 'staff_to_coverage' | 'demand_to_staff';
   total_people: number;
   fl_count: number;
+  aps_count: number;
   acs_count: number;
   include_fmp: boolean;
   settings: CalculatorSettings;
+  requested_sector_counts: number[];
 }
 
 export interface VirtualPerson {
   id: string;
-  license: 'FL' | 'ACS';
+  license: 'FL' | 'APS' | 'ACS';
   shift: string;
   role: string | null;
   sector_hours: number;
@@ -33,19 +36,28 @@ export interface VirtualPerson {
 export interface ShiftSummary {
   shift: string;
   fl: number;
+  aps: number;
   acs: number;
   total: number;
+}
+
+export interface SectorAssignment {
+  lower_worker: string;
+  upper_worker: string;
 }
 
 export interface HourlyCoverage {
   hour: string;
   open_sectors: number;
   workers: string[];
+  sector_workers: (SectorAssignment | null)[];
 }
 
 export interface CalculatorResponse {
   feasible: boolean;
   max_sector_hours: number;
+  requested_sector_hours: number;
+  missing_sector_hours: number;
   minimum_required_fl: number;
   unused_people: number;
   people: VirtualPerson[];
