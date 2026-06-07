@@ -9,7 +9,17 @@ KonfMaker is a web-based planning prototype for calculating maximum sector hours
 
 ## Run locally
 
-### Backend
+### Quick start in GitHub Codespaces
+
+From the repository root, run one command:
+
+```bash
+./scripts/start-codespaces.sh
+```
+
+The script prepares the backend virtual environment if needed, installs missing frontend packages, starts the backend on port `8000`, and starts the frontend on port `5173`. In the **Ports** panel, open the forwarded URL for port `5173`.
+
+### Manual backend start
 
 ```bash
 cd backend
@@ -19,7 +29,7 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
 ```
 
-### Frontend
+### Manual frontend start
 
 ```bash
 cd frontend
@@ -29,13 +39,7 @@ npm run dev
 
 The frontend expects the API at `http://localhost:8000` by default. Override with `VITE_API_BASE_URL` if needed.
 
-### GitHub Codespaces
-
-When running in Codespaces, start both ports:
-
-1. Start the backend on port `8000`.
-2. Start the frontend on port `5173`.
-3. Open the forwarded frontend URL for port `5173`.
+### GitHub Codespaces notes
 
 The frontend automatically detects GitHub's forwarded `*.app.github.dev` URL and calls the matching backend URL on port `8000`. You can still override this manually if needed:
 
