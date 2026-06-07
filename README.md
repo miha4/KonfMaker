@@ -7,31 +7,70 @@ KonfMaker is a web-based planning prototype for calculating maximum sector hours
 - Frontend: React + TypeScript + Vite
 - Backend: Python + FastAPI
 
-## Run locally
+## Requirements
 
-### Quick start in GitHub Codespaces
+Install these once on your machine:
 
-From the repository root, run one command:
+- **Python 3.11+** (macOS: `python3 --version`)
+- **Node.js LTS + npm** (macOS: `node --version` and `npm --version`)
+
+The project creates and reuses a backend virtual environment at `backend/.venv`. That folder is ignored by git.
+
+## One-command start: local Mac or GitHub Codespaces
+
+From the repository root:
 
 ```bash
 npm start
 ```
 
-The same startup flow is also available directly as `./scripts/start-codespaces.sh`.
+This runs `./scripts/start-dev.sh`, which:
 
-The script prepares the backend virtual environment if needed, installs missing frontend packages, starts the backend on port `8000`, and starts the frontend on port `5173`. In the **Ports** panel, open the forwarded URL for port `5173`. The frontend calls `/api` on its own origin and Vite proxies those requests to the backend, which avoids GitHub Codespaces cross-port CORS issues.
+1. finds `python3` / `python`,
+2. creates `backend/.venv` if it does not exist,
+3. installs missing backend dependencies from `backend/requirements.txt`,
+4. installs frontend dependencies if `frontend/node_modules` is missing,
+5. starts FastAPI on port `8000`,
+6. starts Vite on port `5173`.
 
-### Manual backend start
+Open the app at:
+
+- **Local Mac:** <http://localhost:5173>
+- **Codespaces:** forwarded URL for port `5173`
+
+The frontend calls relative `/api` URLs. Vite proxies those calls to `http://127.0.0.1:8000`, so both local and Codespaces development use the same browser-safe path.
+
+### Useful environment overrides
+
+If ports are busy, you can override them:
+
+```bash
+BACKEND_PORT=8010 FRONTEND_PORT=5174 npm start
+```
+
+If you want to choose a specific Python executable:
+
+```bash
+PYTHON=/opt/homebrew/bin/python3 npm start
+```
+
+If you want the virtual environment somewhere else:
+
+```bash
+BACKEND_VENV_DIR=/path/to/venv npm start
+```
+
+## Manual backend start
 
 ```bash
 cd backend
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-### Manual frontend start
+## Manual frontend start
 
 ```bash
 cd frontend
@@ -39,11 +78,11 @@ npm install
 npm run dev
 ```
 
-During development the frontend calls relative `/api` URLs. Vite proxies those requests to `http://127.0.0.1:8000`, so local and Codespaces development do not require the browser to call a separate backend origin. Override with `VITE_API_BASE_URL` only if you intentionally want to bypass the Vite proxy.
+Open <http://localhost:5173>. During development Vite proxies `/api` requests to `http://127.0.0.1:8000`.
 
-### GitHub Codespaces notes
+## GitHub Codespaces notes
 
-The recommended Codespaces setup is to open only the forwarded URL for port `5173`; the Vite dev server forwards `/api` requests to FastAPI internally. You can still override this manually if needed:
+The recommended Codespaces setup is to open only the forwarded URL for port `5173`; the Vite dev server forwards `/api` requests to FastAPI internally. You can still override the API base URL manually if needed:
 
 ```bash
 cd frontend
@@ -54,4 +93,10 @@ The backend also allows browser requests from GitHub's forwarded `*.app.github.d
 
 ## Current MVP
 
-The first implemented program is **Kalkulator sektorskih ur**. It accepts total people, FL count, ACS count, FMP requirement and editable fixed rules. It returns feasibility, estimated maximum sector hours, a generated virtual staff list, shift distribution and hourly coverage.
+The implemented program is **Kalkulator sektorskih ur**. It supports:
+
+- calculating coverage from entered staff counts,
+- calculating a generated staff plan from requested hourly sector openness,
+- APS/ACS/FL licence split,
+- paired lower/upper sector assignments,
+- editable shift and rest rules.
