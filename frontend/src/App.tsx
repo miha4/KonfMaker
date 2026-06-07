@@ -75,31 +75,6 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
-const DAY_START = 7;
-const HOURS_IN_DAY = 24;
-
-function buildHourLabels(): string[] {
-  return Array.from({ length: HOURS_IN_DAY }, (_, index) => {
-    const start = (DAY_START + index) % HOURS_IN_DAY;
-    const end = (start + 1) % HOURS_IN_DAY;
-    return `${start.toString().padStart(2, '0')}:00–${end.toString().padStart(2, '0')}:00`;
-  });
-}
-
-function createDefaultSectorDemand(maxSectors: number): number[] {
-  return Array.from({ length: HOURS_IN_DAY }, () => maxSectors);
-}
-
-function clampSectorDemand(demand: number[], maxSectors: number): number[] {
-  return Array.from({ length: HOURS_IN_DAY }, (_, index) => clamp(demand[index] ?? maxSectors, 0, maxSectors));
-}
-
-const hourLabels = buildHourLabels();
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(Math.max(value, min), max);
-}
-
 function NumberField({
   label,
   value,
@@ -506,6 +481,7 @@ export default function App() {
   const [includeFmp, setIncludeFmp] = useState(true);
   const [result, setResult] = useState<CalculatorResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [calculationProgress, setCalculationProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -550,6 +526,7 @@ export default function App() {
 
   const runCalculation = async () => {
     setIsLoading(true);
+    setCalculationProgress(8);
     setError(null);
     const payload: CalculatorRequest = {
       calculation_mode: calculationMode,
@@ -562,12 +539,18 @@ export default function App() {
       requested_sector_counts: effectiveSectorDemand,
     };
 
+    const progressTimer = window.setInterval(() => {
+      setCalculationProgress((currentProgress) => Math.min(currentProgress + 7, 92));
+    }, 450);
+
     try {
       const response = await calculateSectorHours(payload);
+      setCalculationProgress(100);
       setResult(response);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Neznana napaka pri izračunu.');
     } finally {
+      window.clearInterval(progressTimer);
       setIsLoading(false);
     }
   };
@@ -682,6 +665,18 @@ export default function App() {
               <input type="checkbox" checked={includeFmp} onChange={(event) => setIncludeFmp(event.target.checked)} />
               <span>Vključi FMP kot A9/FL. FMP se uporabi na sektorju samo, če je koristno.</span>
             </label>
+            {isLoading ? (
+              <div className="calculation-progress" role="status" aria-live="polite">
+                <div className="progress-row">
+                  <span>Računam razpored ...</span>
+                  <strong>{calculationProgress}%</strong>
+                </div>
+                <div className="progress-track">
+                  <div className="progress-fill" style={{ width: `${calculationProgress}%` }} />
+                </div>
+                <small>Če je odprtost zahtevna, lahko izračun traja nekaj sekund.</small>
+              </div>
+            ) : null}
             {error ? <div className="error-box">{error}</div> : null}
             <button className="primary-button" disabled={isLoading} onClick={runCalculation} type="button">
               {isLoading ? 'Računam ...' : 'Izračunaj maksimalne sektorske ure'}
