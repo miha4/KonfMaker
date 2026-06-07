@@ -16,6 +16,7 @@ export interface CalculatorSettings {
 export interface CalculatorRequest {
   total_people: number;
   fl_count: number;
+  aps_count: number;
   acs_count: number;
   include_fmp: boolean;
   settings: CalculatorSettings;
@@ -23,7 +24,7 @@ export interface CalculatorRequest {
 
 export interface VirtualPerson {
   id: string;
-  license: 'FL' | 'ACS';
+  license: 'FL' | 'APS' | 'ACS';
   shift: string;
   role: string | null;
   sector_hours: number;
@@ -33,14 +34,21 @@ export interface VirtualPerson {
 export interface ShiftSummary {
   shift: string;
   fl: number;
+  aps: number;
   acs: number;
   total: number;
+}
+
+export interface SectorAssignment {
+  lower_worker: string;
+  upper_worker: string;
 }
 
 export interface HourlyCoverage {
   hour: string;
   open_sectors: number;
   workers: string[];
+  sector_workers: (SectorAssignment | null)[];
 }
 
 export interface CalculatorResponse {
