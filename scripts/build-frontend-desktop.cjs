@@ -5,9 +5,12 @@ const path = require("node:path");
 
 const rootDir = path.resolve(__dirname, "..");
 const frontendDir = path.join(rootDir, "frontend");
-const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
+const command =
+  process.platform === "win32"
+    ? { bin: "cmd.exe", args: ["/d", "/s", "/c", "npm run build"] }
+    : { bin: "npm", args: ["run", "build"] };
 
-const result = spawnSync(npmCommand, ["run", "build"], {
+const result = spawnSync(command.bin, command.args, {
   cwd: frontendDir,
   env: {
     ...process.env,
