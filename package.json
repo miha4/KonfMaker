@@ -12,9 +12,9 @@
     "desktop:build-frontend": "node scripts/build-frontend-desktop.cjs",
     "desktop:dev": "npm run desktop:prepare-backend && npm run desktop:build-frontend && electron .",
     "desktop:bundle-backend": "node scripts/build-backend-sidecar.cjs",
-    "desktop:build:mac": "npm run desktop:bundle-backend && npm run desktop:build-frontend && electron-builder --mac",
-    "desktop:build:win": "node scripts/assert-windows-build-host.cjs && npm run desktop:bundle-backend && npm run desktop:build-frontend && electron-builder --win",
-    "desktop:dist": "npm run desktop:bundle-backend && npm run desktop:build-frontend && electron-builder"
+    "desktop:build:mac": "npm run desktop:bundle-backend && npm run desktop:build-frontend && electron-builder --mac --publish never",
+    "desktop:build:win": "node scripts/assert-windows-build-host.cjs && npm run desktop:bundle-backend && npm run desktop:build-frontend && electron-builder --win --publish never",
+    "desktop:dist": "npm run desktop:bundle-backend && npm run desktop:build-frontend && electron-builder --publish never"
   },
   "devDependencies": {
     "electron": "^33.3.2",
