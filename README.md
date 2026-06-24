@@ -100,3 +100,144 @@ The implemented program is **Kalkulator sektorskih ur**. It supports:
 - APS/ACS/FL licence split,
 - paired lower/upper sector assignments,
 - editable shift and rest rules.
+
+
+##PRAVILA
+
+Da, spodaj je trenutni seznam, kot ga razumem iz kode.
+
+**Trde omejitve**
+To so pravila, ki jih kalibracija ne sme kršiti.
+
+- Izmena velja samo v svojih urah.
+  Primer: `A7` samo v svojem časovnem oknu, `A21/V3` v nočnem oknu.
+
+- Upoštevajo se samo aktivne izmene iz `Nastavitev pravil`.
+  Če je `A12` izklopljena, je model ne sme uporabljati.
+
+- Vsak odprt sektor potrebuje 2 človeka.
+
+- Licenčna pravila sektorjev:
+  `ALL` zahteva `2× FL`.
+  `LOWER` sprejme `FL` ali `APS`.
+  `UPPER`, `MID`, `HIGH`, `TOP` sprejmejo `FL` ali `ACS`.
+
+- Ena oseba ne more delati na dveh mestih v isti uri.
+
+- Pravilo ritma dela:
+  privzeto največ `2` uri zapored na sektorju in potem vsaj `1` ura pavze.
+  To je pravilo `2-1-2-1-2`.
+
+- Maksimalne sektorske ure na osebo izhajajo iz izmene in zgornjega pravila.
+
+- `Vi1/V1` in `Vi2/V2` ne smeta delati prvo in zadnjo uro svoje izmene.
+
+- `Vi3/V3` ne sme delati prvo uro svoje izmene.
+
+- Vloge imajo limite sektorskih ur:
+  `V1` privzeto max `1`,
+  `V2` privzeto max `1`,
+  `V3` privzeto max `2`,
+  `FMP` privzeto max `6`.
+
+- Vodje izmen so vedno `FL`.
+  Uporabnik jim v UI ne more spremeniti licence v APS/ACS.
+
+- Če je vključeno obvezno vodstvo izmen:
+  doda oziroma zahteva `V1/A7`, `V2/A14`, `V3/A21`, vsi `FL`.
+
+- Nočna FL zahteva:
+  če je vključena, omeji nočno FL zasedbo na `V3 + dodatni A21 FL` do nastavljenega števila.
+  Privzeto je skupno `4` FL za noč, kjer je V3 že eden od njih.
+
+- Če je `FMP` vključen:
+  doda se `FMP/A9/FL` kot posebna vloga.
+
+- Fiksno vpisani ljudje so obvezni oziroma omejujejo generator.
+  Če uporabnik ročno določi neko izmeno, jo mora model upoštevati oziroma ne sme preseči takšnih fiksnih omejitev.
+
+- What-if zaklenjeni ljudje so obvezni.
+  Ko uporabnik fiksira osebo/izmeno, mora model to upoštevati.
+
+- Konkretni office po izmenah je obvezen, če je vpisan.
+  Npr. `1× FL A7o` se mora vključiti kot office kandidat/oseba.
+
+- Operativni office pool je omejen na vpisano število.
+  Če je vpisan `FL office 1`, model ne sme uporabiti več kot enega.
+
+- Limit ljudi je trd, kadar je vključen.
+  Model ne sme preseči vpisanega števila rednih ljudi; office pool se obravnava posebej kot fallback.
+
+- Pri vpisanih konkretnih licencah v načinu “iz ljudi” so FL/APS/ACS zgornje meje.
+  Model ne sme izbrati več posamezne licence, kot jih je na voljo.
+
+- Želena odprtost po urah je zgornji cilj.
+  Model ne odpira več sektorjev, kot jih uporabnik nastavi za uro.
+
+- Največ sektorjev hkrati je omejeno z nastavitvijo `max_sectors_per_hour`.
+
+**Mehke omejitve / preference**
+To so stvari, ki jih lahko kalibrirava brez kršenja pravil.
+
+- Glavni cilj je najprej pokriti čim več sektorskih ur.
+  To ima daleč največjo težo.
+
+- Nato model kaznuje uporabo office oseb.
+  Office naj bo zadnja možnost.
+
+- Office delo ima dodatno kazen po uri:
+  office je bolj zaželen na začetku ali koncu office izmene, manj v sredini.
+
+- Model kaznuje večje število izbranih ljudi.
+  Pri enaki pokritosti raje uporabi manj ljudi.
+
+- Model kaznuje več neizkoriščene kapacitete.
+  Pri enakem številu ljudi raje uporabi bolj “polno” sestavo.
+
+- FMP ima slabšo prioriteto pri dodeljevanju na sektor.
+  Dovoljen je, ampak naj se ne uporablja prehitro.
+
+- V1/V2/V3 imajo slabšo prioriteto kot navadni kontrolorji.
+  Ker so vodje, jih model ne porablja po nepotrebnem.
+
+- Na LOWER model preferira APS pred FL.
+  FL je dovoljen, ampak manj zaželen.
+
+- Na UPPER/MID/HIGH/TOP model preferira ACS pred FL.
+  FL je dovoljen, ampak manj zaželen.
+
+- Če je vključeno ciljno razmerje licenc, model kaznuje odstopanje od FL/APS/ACS procentov.
+
+- Če je vključena opcija “pri enaki pokritosti uporabi čim manj FL”, model dodatno kaznuje preveč FL.
+
+- Pri 2 odprtih sektorjih ima model preferenčne sektorje po uri.
+  Včasih raje `LOWER + UPPER`, v določenih urah raje `LOWER + TOP`.
+
+- Izbira profila sektorjev ima mehko kazen.
+  Model lahko izbere drugo dovoljeno kombinacijo, če to izboljša pokritost.
+
+- Warm-start iz ročne baze je mehka smer.
+  Ročna konfiguracija mu pomaga začeti blizu dobre rešitve, ampak CP-SAT jo lahko spremeni.
+
+- Lokalno glajenje po rešitvi:
+  če ne zmanjša pokritosti, poskuša ohraniti isti sektor oziroma manj menjavati levo/desno.
+
+- Tie-breakerji pri sestavljanju kandidatov:
+  model preferira izmene, ki bolje pokrivajo iskano odprtost, in ne želi preveč napolniti ene izmene po nepotrebnem.
+
+**Za kalibracijo primerno**
+Najbolj primerni kandidati za učenje iz fokus konfiguracij so:
+
+- uteži za office,
+- uteži za FMP,
+- uteži za porabo V1/V2/V3,
+- preferenca APS na LOWER,
+- preferenca ACS na ostalih sektorjih,
+- kazen za dodatnega človeka,
+- kazen za neizkoriščeno kapaciteto,
+- kazen za odstopanje od licenčnega razmerja,
+- preference sektorjev pri 2 odprtih sektorjih,
+- način izbire/warm-starta iz ročne baze,
+- vrstni red faz: ročna baza, redna faza, polish, office fallback.
+
+To zadnje je tisto, kar bi fokus audit lahko “učil”, medtem ko trda pravila ostanejo nedotaknjena.

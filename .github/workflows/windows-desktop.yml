@@ -1,0 +1,52 @@
+name: Build Windows Desktop
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install desktop dependencies
+        run: npm ci
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm install
+
+      - name: Build Windows package
+        run: npm run desktop:build:win
+
+      - name: Prepare download names
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path download-site/downloads | Out-Null
+          $setup = Get-ChildItem release -Filter "*.exe" | Sort-Object Length -Descending | Select-Object -First 1
+          if (-not $setup) { throw "Windows installer .exe was not created." }
+          Copy-Item $setup.FullName download-site/downloads/KonfMaker-windows.exe -Force
+          $zip = Get-ChildItem release -Filter "*win*.zip" | Sort-Object Length -Descending | Select-Object -First 1
+          if ($zip) { Copy-Item $zip.FullName download-site/downloads/KonfMaker-windows.zip -Force }
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: konfmaker-windows
+          path: |
+            release/*.exe
+            release/*win*.zip
+            download-site/downloads/KonfMaker-windows.exe
+            download-site/downloads/KonfMaker-windows.zip

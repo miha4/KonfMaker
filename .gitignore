@@ -10,6 +10,13 @@ node_modules/
 frontend/dist/
 frontend/.vite/
 *.tsbuildinfo
+backend/.pattern-cache/
+backend/.desktop-venv/
+backend/build/
+backend/dist/
+release/
+konfmaker-engine.spec
+download-site/downloads/
 
 # OS / editors
 .DS_Store

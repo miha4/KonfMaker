@@ -2,9 +2,68 @@
   "name": "konfmaker",
   "version": "0.1.0",
   "private": true,
+  "description": "KonfMaker desktop and web calculator.",
+  "main": "electron/main.cjs",
   "scripts": {
     "start": "./scripts/start-dev.sh",
     "dev": "./scripts/start-dev.sh",
-    "start:codespaces": "./scripts/start-codespaces.sh"
+    "start:codespaces": "./scripts/start-codespaces.sh",
+    "desktop:prepare-backend": "./scripts/prepare-desktop-backend.sh",
+    "desktop:build-frontend": "cd frontend && VITE_API_BASE_URL=http://127.0.0.1:8765 npm run build",
+    "desktop:dev": "npm run desktop:prepare-backend && npm run desktop:build-frontend && electron .",
+    "desktop:bundle-backend": "node scripts/build-backend-sidecar.cjs",
+    "desktop:build:mac": "npm run desktop:bundle-backend && npm run desktop:build-frontend && electron-builder --mac",
+    "desktop:build:win": "node scripts/assert-windows-build-host.cjs && npm run desktop:bundle-backend && npm run desktop:build-frontend && electron-builder --win",
+    "desktop:dist": "npm run desktop:bundle-backend && npm run desktop:build-frontend && electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^33.3.2",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "si.konfmaker.desktop",
+    "productName": "KonfMaker",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**/*",
+      "frontend/dist/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "backend/dist",
+        "to": "backend",
+        "filter": [
+          "konfmaker-engine*"
+        ]
+      },
+      {
+        "from": "Konfiguracije OKZP.xlsx",
+        "to": "data/Konfiguracije OKZP.xlsx"
+      },
+      {
+        "from": "data",
+        "to": "data",
+        "filter": [
+          "konfiguracije_okzp_obogateno_vlimiti.csv",
+          "user_configurations.json"
+        ]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "zip"
+      ]
+    }
   }
 }

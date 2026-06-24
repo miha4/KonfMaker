@@ -1,0 +1,3329 @@
+{
+  "version": 1,
+  "updated_at": "2026-06-23T15:00:11.060831+00:00",
+  "configurations": [
+    {
+      "id": "user:20260623150011-f9b4d7ab",
+      "name": "User 23m4o",
+      "created_at": "2026-06-23T15:00:11.059697+00:00",
+      "note": null,
+      "result": {
+        "feasible": true,
+        "max_sector_hours": 57,
+        "requested_sector_hours": 57,
+        "solver_upper_bound_sector_hours": 57,
+        "solver_gap_to_upper_bound": 0,
+        "solver_status": "FEASIBLE",
+        "solver_solution_count": 61,
+        "solver_optimality_gap_percent": 0.0,
+        "solver_stop_reason": "brez izboljšanja pokritosti 60 s; najboljša rešitev pokriva 57/57 sektorskih ur, meja največ 57, razlika 0",
+        "missing_sector_hours": 0,
+        "baseline_min_people": 23,
+        "baseline_min_people_formula": "57 SH × 2 = 114 kontrolorskih ur; ceil(114/5) = 23; urna konica zahteva 8; osnovni n5 minimum = 23 ljudi.",
+        "minimum_required_fl": 13,
+        "planned_people": 23,
+        "active_people": 23,
+        "unused_people": 0,
+        "scheduled_person_hours": 114,
+        "total_person_capacity_hours": 123,
+        "utilization_percent": 93,
+        "people": [
+          {
+            "id": "Vi1",
+            "license": "FL",
+            "shift": "A7",
+            "role": "V1",
+            "sector_hours": 1,
+            "max_sector_hours": 1,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "Vi2",
+            "license": "FL",
+            "shift": "A14",
+            "role": "V2",
+            "sector_hours": 2,
+            "max_sector_hours": 2,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "Vi3",
+            "license": "FL",
+            "shift": "A21",
+            "role": "V3",
+            "sector_hours": 4,
+            "max_sector_hours": 4,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "A",
+            "license": "FL",
+            "shift": "A7",
+            "role": null,
+            "sector_hours": 5,
+            "max_sector_hours": 5,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "B",
+            "license": "FL",
+            "shift": "A7",
+            "role": null,
+            "sector_hours": 5,
+            "max_sector_hours": 5,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "C",
+            "license": "FL",
+            "shift": "A9",
+            "role": null,
+            "sector_hours": 6,
+            "max_sector_hours": 6,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "D",
+            "license": "FL",
+            "shift": "A11",
+            "role": null,
+            "sector_hours": 5,
+            "max_sector_hours": 6,
+            "utilization_percent": 83,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "E",
+            "license": "FL",
+            "shift": "A14",
+            "role": null,
+            "sector_hours": 5,
+            "max_sector_hours": 5,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "F",
+            "license": "FL",
+            "shift": "A17",
+            "role": null,
+            "sector_hours": 5,
+            "max_sector_hours": 6,
+            "utilization_percent": 83,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "G",
+            "license": "FL",
+            "shift": "A21",
+            "role": null,
+            "sector_hours": 7,
+            "max_sector_hours": 7,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "H",
+            "license": "FL",
+            "shift": "A21",
+            "role": null,
+            "sector_hours": 6,
+            "max_sector_hours": 7,
+            "utilization_percent": 86,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "I",
+            "license": "FL",
+            "shift": "A21",
+            "role": null,
+            "sector_hours": 7,
+            "max_sector_hours": 7,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "J",
+            "license": "ACS",
+            "shift": "A7",
+            "role": null,
+            "sector_hours": 5,
+            "max_sector_hours": 5,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "K",
+            "license": "ACS",
+            "shift": "A7",
+            "role": null,
+            "sector_hours": 5,
+            "max_sector_hours": 5,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "L",
+            "license": "ACS",
+            "shift": "A8",
+            "role": null,
+            "sector_hours": 6,
+            "max_sector_hours": 6,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "M",
+            "license": "ACS",
+            "shift": "A8",
+            "role": null,
+            "sector_hours": 6,
+            "max_sector_hours": 6,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "N",
+            "license": "ACS",
+            "shift": "A9",
+            "role": null,
+            "sector_hours": 6,
+            "max_sector_hours": 6,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "O",
+            "license": "ACS",
+            "shift": "A11",
+            "role": null,
+            "sector_hours": 5,
+            "max_sector_hours": 6,
+            "utilization_percent": 83,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "P",
+            "license": "ACS",
+            "shift": "A11",
+            "role": null,
+            "sector_hours": 6,
+            "max_sector_hours": 6,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "Q",
+            "license": "ACS",
+            "shift": "A11",
+            "role": null,
+            "sector_hours": 6,
+            "max_sector_hours": 6,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "R",
+            "license": "ACS",
+            "shift": "A14",
+            "role": null,
+            "sector_hours": 5,
+            "max_sector_hours": 5,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "S",
+            "license": "ACS",
+            "shift": "A14",
+            "role": null,
+            "sector_hours": 5,
+            "max_sector_hours": 5,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "T",
+            "license": "FL",
+            "shift": "A9o",
+            "role": null,
+            "sector_hours": 1,
+            "max_sector_hours": 6,
+            "utilization_percent": 17,
+            "used_as_sector_controller": true,
+            "source": "office-pool"
+          }
+        ],
+        "shift_summary": [
+          {
+            "shift": "A7",
+            "fl": 2,
+            "aps": 0,
+            "acs": 2,
+            "total": 4
+          },
+          {
+            "shift": "V1/A7",
+            "fl": 1,
+            "aps": 0,
+            "acs": 0,
+            "total": 1
+          },
+          {
+            "shift": "A8",
+            "fl": 0,
+            "aps": 0,
+            "acs": 2,
+            "total": 2
+          },
+          {
+            "shift": "A9",
+            "fl": 1,
+            "aps": 0,
+            "acs": 1,
+            "total": 2
+          },
+          {
+            "shift": "A11",
+            "fl": 1,
+            "aps": 0,
+            "acs": 3,
+            "total": 4
+          },
+          {
+            "shift": "A14",
+            "fl": 1,
+            "aps": 0,
+            "acs": 2,
+            "total": 3
+          },
+          {
+            "shift": "V2/A14",
+            "fl": 1,
+            "aps": 0,
+            "acs": 0,
+            "total": 1
+          },
+          {
+            "shift": "A17",
+            "fl": 1,
+            "aps": 0,
+            "acs": 0,
+            "total": 1
+          },
+          {
+            "shift": "A21",
+            "fl": 3,
+            "aps": 0,
+            "acs": 0,
+            "total": 3
+          },
+          {
+            "shift": "V3/A21",
+            "fl": 1,
+            "aps": 0,
+            "acs": 0,
+            "total": 1
+          },
+          {
+            "shift": "officer/A9o",
+            "fl": 1,
+            "aps": 0,
+            "acs": 0,
+            "total": 1
+          }
+        ],
+        "hourly_coverage": [
+          {
+            "hour": "07:00–08:00",
+            "open_sectors": 2,
+            "workers": [
+              "B",
+              "A",
+              "K",
+              "J"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "B",
+                "upper_worker": "A"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "K",
+                "upper_worker": "J"
+              },
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "hour": "08:00–09:00",
+            "open_sectors": 3,
+            "workers": [
+              "Vi1",
+              "B",
+              "J",
+              "K",
+              "M",
+              "L"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "Vi1",
+                "upper_worker": "B"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "J",
+                "upper_worker": "K"
+              },
+              null,
+              null,
+              {
+                "sector_name": "TOP",
+                "lower_worker": "M",
+                "upper_worker": "L"
+              }
+            ]
+          },
+          {
+            "hour": "09:00–10:00",
+            "open_sectors": 3,
+            "workers": [
+              "T",
+              "C",
+              "N",
+              "A",
+              "L",
+              "M"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "T",
+                "upper_worker": "C"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "N",
+                "upper_worker": "A"
+              },
+              null,
+              null,
+              {
+                "sector_name": "TOP",
+                "lower_worker": "L",
+                "upper_worker": "M"
+              }
+            ]
+          },
+          {
+            "hour": "10:00–11:00",
+            "open_sectors": 3,
+            "workers": [
+              "C",
+              "A",
+              "J",
+              "N",
+              "K",
+              "B"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "C",
+                "upper_worker": "A"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "J",
+                "upper_worker": "N"
+              },
+              null,
+              null,
+              {
+                "sector_name": "TOP",
+                "lower_worker": "K",
+                "upper_worker": "B"
+              }
+            ]
+          },
+          {
+            "hour": "11:00–12:00",
+            "open_sectors": 4,
+            "workers": [
+              "B",
+              "D",
+              "Q",
+              "M",
+              "L",
+              "O",
+              "P",
+              "K"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "B",
+                "upper_worker": "D"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "Q",
+                "upper_worker": "M"
+              },
+              null,
+              {
+                "sector_name": "HIGH",
+                "lower_worker": "L",
+                "upper_worker": "O"
+              },
+              {
+                "sector_name": "TOP",
+                "lower_worker": "P",
+                "upper_worker": "K"
+              }
+            ]
+          },
+          {
+            "hour": "12:00–13:00",
+            "open_sectors": 4,
+            "workers": [
+              "A",
+              "C",
+              "M",
+              "Q",
+              "N",
+              "L",
+              "J",
+              "P"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "A",
+                "upper_worker": "C"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "M",
+                "upper_worker": "Q"
+              },
+              null,
+              {
+                "sector_name": "HIGH",
+                "lower_worker": "N",
+                "upper_worker": "L"
+              },
+              {
+                "sector_name": "TOP",
+                "lower_worker": "J",
+                "upper_worker": "P"
+              }
+            ]
+          },
+          {
+            "hour": "13:00–14:00",
+            "open_sectors": 4,
+            "workers": [
+              "C",
+              "A",
+              "K",
+              "D",
+              "B",
+              "N",
+              "O",
+              "J"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "C",
+                "upper_worker": "A"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "K",
+                "upper_worker": "D"
+              },
+              null,
+              {
+                "sector_name": "HIGH",
+                "lower_worker": "B",
+                "upper_worker": "N"
+              },
+              {
+                "sector_name": "TOP",
+                "lower_worker": "O",
+                "upper_worker": "J"
+              }
+            ]
+          },
+          {
+            "hour": "14:00–15:00",
+            "open_sectors": 4,
+            "workers": [
+              "E",
+              "D",
+              "S",
+              "R",
+              "Q",
+              "P",
+              "L",
+              "M"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "E",
+                "upper_worker": "D"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "S",
+                "upper_worker": "R"
+              },
+              null,
+              {
+                "sector_name": "HIGH",
+                "lower_worker": "Q",
+                "upper_worker": "P"
+              },
+              {
+                "sector_name": "TOP",
+                "lower_worker": "L",
+                "upper_worker": "M"
+              }
+            ]
+          },
+          {
+            "hour": "15:00–16:00",
+            "open_sectors": 4,
+            "workers": [
+              "C",
+              "E",
+              "N",
+              "O",
+              "P",
+              "Q",
+              "M",
+              "L"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "C",
+                "upper_worker": "E"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "N",
+                "upper_worker": "O"
+              },
+              null,
+              {
+                "sector_name": "HIGH",
+                "lower_worker": "P",
+                "upper_worker": "Q"
+              },
+              {
+                "sector_name": "TOP",
+                "lower_worker": "M",
+                "upper_worker": "L"
+              }
+            ]
+          },
+          {
+            "hour": "16:00–17:00",
+            "open_sectors": 3,
+            "workers": [
+              "D",
+              "C",
+              "O",
+              "N",
+              "S",
+              "R"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "D",
+                "upper_worker": "C"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "O",
+                "upper_worker": "N"
+              },
+              null,
+              null,
+              {
+                "sector_name": "TOP",
+                "lower_worker": "S",
+                "upper_worker": "R"
+              }
+            ]
+          },
+          {
+            "hour": "17:00–18:00",
+            "open_sectors": 3,
+            "workers": [
+              "F",
+              "E",
+              "Q",
+              "P",
+              "R",
+              "S"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "F",
+                "upper_worker": "E"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "Q",
+                "upper_worker": "P"
+              },
+              null,
+              null,
+              {
+                "sector_name": "TOP",
+                "lower_worker": "R",
+                "upper_worker": "S"
+              }
+            ]
+          },
+          {
+            "hour": "18:00–19:00",
+            "open_sectors": 3,
+            "workers": [
+              "D",
+              "F",
+              "P",
+              "Q",
+              "Vi2",
+              "O"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "D",
+                "upper_worker": "F"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "P",
+                "upper_worker": "Q"
+              },
+              null,
+              null,
+              {
+                "sector_name": "TOP",
+                "lower_worker": "Vi2",
+                "upper_worker": "O"
+              }
+            ]
+          },
+          {
+            "hour": "19:00–20:00",
+            "open_sectors": 2,
+            "workers": [
+              "E",
+              "Vi2",
+              "S",
+              "R"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "E",
+                "upper_worker": "Vi2"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "S",
+                "upper_worker": "R"
+              },
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "hour": "20:00–21:00",
+            "open_sectors": 2,
+            "workers": [
+              "F",
+              "E",
+              "R",
+              "S"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "F",
+                "upper_worker": "E"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "R",
+                "upper_worker": "S"
+              },
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "hour": "21:00–22:00",
+            "open_sectors": 2,
+            "workers": [
+              "H",
+              "F",
+              "G",
+              "I"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "H",
+                "upper_worker": "F"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "G",
+                "upper_worker": "I"
+              },
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "hour": "22:00–23:00",
+            "open_sectors": 2,
+            "workers": [
+              "Vi3",
+              "H",
+              "I",
+              "G"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "Vi3",
+                "upper_worker": "H"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "I",
+                "upper_worker": "G"
+              },
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "hour": "23:00–00:00",
+            "open_sectors": 1,
+            "workers": [
+              "F",
+              "Vi3"
+            ],
+            "sector_workers": [
+              {
+                "sector_name": "ALL",
+                "lower_worker": "F",
+                "upper_worker": "Vi3"
+              },
+              null,
+              null,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "hour": "00:00–01:00",
+            "open_sectors": 1,
+            "workers": [
+              "G",
+              "I"
+            ],
+            "sector_workers": [
+              {
+                "sector_name": "ALL",
+                "lower_worker": "G",
+                "upper_worker": "I"
+              },
+              null,
+              null,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "hour": "01:00–02:00",
+            "open_sectors": 1,
+            "workers": [
+              "I",
+              "H"
+            ],
+            "sector_workers": [
+              {
+                "sector_name": "ALL",
+                "lower_worker": "I",
+                "upper_worker": "H"
+              },
+              null,
+              null,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "hour": "02:00–03:00",
+            "open_sectors": 1,
+            "workers": [
+              "H",
+              "G"
+            ],
+            "sector_workers": [
+              {
+                "sector_name": "ALL",
+                "lower_worker": "H",
+                "upper_worker": "G"
+              },
+              null,
+              null,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "hour": "03:00–04:00",
+            "open_sectors": 1,
+            "workers": [
+              "G",
+              "I"
+            ],
+            "sector_workers": [
+              {
+                "sector_name": "ALL",
+                "lower_worker": "G",
+                "upper_worker": "I"
+              },
+              null,
+              null,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "hour": "04:00–05:00",
+            "open_sectors": 1,
+            "workers": [
+              "I",
+              "H"
+            ],
+            "sector_workers": [
+              {
+                "sector_name": "ALL",
+                "lower_worker": "I",
+                "upper_worker": "H"
+              },
+              null,
+              null,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "hour": "05:00–06:00",
+            "open_sectors": 1,
+            "workers": [
+              "G",
+              "Vi3"
+            ],
+            "sector_workers": [
+              {
+                "sector_name": "ALL",
+                "lower_worker": "G",
+                "upper_worker": "Vi3"
+              },
+              null,
+              null,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "hour": "06:00–07:00",
+            "open_sectors": 2,
+            "workers": [
+              "I",
+              "Vi3",
+              "G",
+              "H"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "I",
+                "upper_worker": "Vi3"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "G",
+                "upper_worker": "H"
+              },
+              null,
+              null,
+              null
+            ]
+          }
+        ],
+        "pareto_points": [],
+        "notes": [
+          "Rezultat je ročno urejen po izračunu.",
+          "Na voljo je 1 operativnih officev iz priporočilnega modula; CP-SAT sam izbere najmanj potrebne office izmene.",
+          "Osnovno izhodišče pred CP-SAT: 57 SH × 2 = 114 kontrolorskih ur; ceil(114/5) = 23; urna konica zahteva 8; osnovni n5 minimum = 23 ljudi.",
+          "Način 2 uporablja OR-Tools CP-SAT: najprej maksimizira pokrite sektorje, nato minimizira število ljudi znotraj limita.",
+          "Operativni office pool je bil uporabljen šele kot fallback po rednih možnostih; redna rešitev je imela 0/57 SH.",
+          "FL/APS/ACS se v tem načinu berejo kot mehko ciljno razmerje (FL 50 %, APS 0 %, ACS 50 %), ne kot trde zgornje meje.",
+          "Skupno število ljudi je omejeno na največ 22.",
+          "Pri enaki pokritosti in številu ljudi CP-SAT izbere zasedbo z manj neizkoriščene kapacitete izmen.",
+          "Status CP-SAT rešitve: FEASIBLE.",
+          "Politika izračuna je samodejno ustavila CP-SAT: brez izboljšanja pokritosti 60 s; najboljša rešitev pokriva 57/57 sektorskih ur, meja največ 57, razlika 0.",
+          "Dokazana zgornja meja po trenutnem CP-SAT boundu je 57 sektorskih ur (razlika 0).",
+          "ALL sektor zahteva 2× FL; LOWER sprejme APS/FL; UPPER, MID, HIGH in TOP sprejmejo ACS/FL.",
+          "Razpored se po CP-SAT rešitvi lokalno zgladi: če ne zmanjša pokritosti, ohrani isti sektor in zamenja levo/desno pozicijo po eni uri.",
+          "Uporabljenih je 1 officerjev iz pisarne.",
+          "Office sektorske ure imajo mehko prednost na začetku ali koncu office izmene; sredina se uporabi, kadar izboljša pokritost."
+        ],
+        "warnings": []
+      }
+    },
+    {
+      "id": "user:20260623104452-0dacf4eb",
+      "name": "User 23z4o - 24z4o",
+      "created_at": "2026-06-23T10:44:52.747675+00:00",
+      "note": null,
+      "result": {
+        "feasible": true,
+        "max_sector_hours": 57,
+        "requested_sector_hours": 57,
+        "solver_upper_bound_sector_hours": 57,
+        "solver_gap_to_upper_bound": 0,
+        "solver_status": "FEASIBLE",
+        "solver_solution_count": 67,
+        "solver_optimality_gap_percent": 0.0,
+        "solver_stop_reason": "brez izboljšanja pokritosti 60 s; najboljša rešitev pokriva 57/57 sektorskih ur, meja največ 57, razlika 0",
+        "missing_sector_hours": 0,
+        "baseline_min_people": 23,
+        "baseline_min_people_formula": "57 SH × 2 = 114 kontrolorskih ur; ceil(114/5) = 23; urna konica zahteva 8; osnovni n5 minimum = 23 ljudi.",
+        "minimum_required_fl": 12,
+        "planned_people": 23,
+        "active_people": 23,
+        "unused_people": 0,
+        "scheduled_person_hours": 114,
+        "total_person_capacity_hours": 122,
+        "utilization_percent": 93,
+        "people": [
+          {
+            "id": "A",
+            "license": "FL",
+            "shift": "A7",
+            "role": "V1",
+            "sector_hours": 1,
+            "max_sector_hours": 1,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "B",
+            "license": "FL",
+            "shift": "A14",
+            "role": "V2",
+            "sector_hours": 2,
+            "max_sector_hours": 2,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "C",
+            "license": "FL",
+            "shift": "A21",
+            "role": "V3",
+            "sector_hours": 4,
+            "max_sector_hours": 4,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "D",
+            "license": "FL",
+            "shift": "A7",
+            "role": null,
+            "sector_hours": 4,
+            "max_sector_hours": 5,
+            "utilization_percent": 80,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "E",
+            "license": "FL",
+            "shift": "A7",
+            "role": null,
+            "sector_hours": 5,
+            "max_sector_hours": 5,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "F",
+            "license": "FL",
+            "shift": "A9",
+            "role": null,
+            "sector_hours": 6,
+            "max_sector_hours": 6,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "G",
+            "license": "FL",
+            "shift": "A14",
+            "role": null,
+            "sector_hours": 5,
+            "max_sector_hours": 5,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "H",
+            "license": "FL",
+            "shift": "A14",
+            "role": null,
+            "sector_hours": 5,
+            "max_sector_hours": 5,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "I",
+            "license": "FL",
+            "shift": "A21",
+            "role": null,
+            "sector_hours": 6,
+            "max_sector_hours": 7,
+            "utilization_percent": 86,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "J",
+            "license": "FL",
+            "shift": "A21",
+            "role": null,
+            "sector_hours": 7,
+            "max_sector_hours": 7,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "K",
+            "license": "FL",
+            "shift": "A21",
+            "role": null,
+            "sector_hours": 7,
+            "max_sector_hours": 7,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "L",
+            "license": "ACS",
+            "shift": "A7",
+            "role": null,
+            "sector_hours": 5,
+            "max_sector_hours": 5,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "M",
+            "license": "ACS",
+            "shift": "A7",
+            "role": null,
+            "sector_hours": 5,
+            "max_sector_hours": 5,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "N",
+            "license": "ACS",
+            "shift": "A8",
+            "role": null,
+            "sector_hours": 6,
+            "max_sector_hours": 6,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "O",
+            "license": "ACS",
+            "shift": "A8",
+            "role": null,
+            "sector_hours": 6,
+            "max_sector_hours": 6,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "P",
+            "license": "ACS",
+            "shift": "A9",
+            "role": null,
+            "sector_hours": 6,
+            "max_sector_hours": 6,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "Q",
+            "license": "ACS",
+            "shift": "A10",
+            "role": null,
+            "sector_hours": 6,
+            "max_sector_hours": 6,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "R",
+            "license": "ACS",
+            "shift": "A11",
+            "role": null,
+            "sector_hours": 5,
+            "max_sector_hours": 6,
+            "utilization_percent": 83,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "S",
+            "license": "ACS",
+            "shift": "A11",
+            "role": null,
+            "sector_hours": 6,
+            "max_sector_hours": 6,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "T",
+            "license": "ACS",
+            "shift": "A14",
+            "role": null,
+            "sector_hours": 5,
+            "max_sector_hours": 5,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "U",
+            "license": "ACS",
+            "shift": "A14",
+            "role": null,
+            "sector_hours": 5,
+            "max_sector_hours": 5,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "V",
+            "license": "ACS",
+            "shift": "A17",
+            "role": null,
+            "sector_hours": 4,
+            "max_sector_hours": 6,
+            "utilization_percent": 67,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "W",
+            "license": "FL",
+            "shift": "A7o",
+            "role": null,
+            "sector_hours": 3,
+            "max_sector_hours": 6,
+            "utilization_percent": 50,
+            "used_as_sector_controller": true,
+            "source": "office-pool"
+          }
+        ],
+        "shift_summary": [
+          {
+            "shift": "A7",
+            "fl": 2,
+            "aps": 0,
+            "acs": 2,
+            "total": 4
+          },
+          {
+            "shift": "V1/A7",
+            "fl": 1,
+            "aps": 0,
+            "acs": 0,
+            "total": 1
+          },
+          {
+            "shift": "A8",
+            "fl": 0,
+            "aps": 0,
+            "acs": 2,
+            "total": 2
+          },
+          {
+            "shift": "A9",
+            "fl": 1,
+            "aps": 0,
+            "acs": 1,
+            "total": 2
+          },
+          {
+            "shift": "A10",
+            "fl": 0,
+            "aps": 0,
+            "acs": 1,
+            "total": 1
+          },
+          {
+            "shift": "A11",
+            "fl": 0,
+            "aps": 0,
+            "acs": 2,
+            "total": 2
+          },
+          {
+            "shift": "A14",
+            "fl": 2,
+            "aps": 0,
+            "acs": 2,
+            "total": 4
+          },
+          {
+            "shift": "V2/A14",
+            "fl": 1,
+            "aps": 0,
+            "acs": 0,
+            "total": 1
+          },
+          {
+            "shift": "A17",
+            "fl": 0,
+            "aps": 0,
+            "acs": 1,
+            "total": 1
+          },
+          {
+            "shift": "A21",
+            "fl": 3,
+            "aps": 0,
+            "acs": 0,
+            "total": 3
+          },
+          {
+            "shift": "V3/A21",
+            "fl": 1,
+            "aps": 0,
+            "acs": 0,
+            "total": 1
+          },
+          {
+            "shift": "officer/A7o",
+            "fl": 1,
+            "aps": 0,
+            "acs": 0,
+            "total": 1
+          }
+        ],
+        "hourly_coverage": [
+          {
+            "hour": "07:00–08:00",
+            "open_sectors": 2,
+            "workers": [
+              "W",
+              "E",
+              "M",
+              "L"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "W",
+                "upper_worker": "E"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "M",
+                "upper_worker": "L"
+              },
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "hour": "08:00–09:00",
+            "open_sectors": 3,
+            "workers": [
+              "E",
+              "W",
+              "N",
+              "M",
+              "O",
+              "D"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "E",
+                "upper_worker": "W"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "N",
+                "upper_worker": "M"
+              },
+              null,
+              null,
+              {
+                "sector_name": "TOP",
+                "lower_worker": "O",
+                "upper_worker": "D"
+              }
+            ]
+          },
+          {
+            "hour": "09:00–10:00",
+            "open_sectors": 3,
+            "workers": [
+              "F",
+              "D",
+              "P",
+              "N",
+              "L",
+              "O"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "F",
+                "upper_worker": "D"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "P",
+                "upper_worker": "N"
+              },
+              null,
+              null,
+              {
+                "sector_name": "TOP",
+                "lower_worker": "L",
+                "upper_worker": "O"
+              }
+            ]
+          },
+          {
+            "hour": "10:00–11:00",
+            "open_sectors": 3,
+            "workers": [
+              "E",
+              "F",
+              "Q",
+              "P",
+              "M",
+              "L"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "E",
+                "upper_worker": "F"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "Q",
+                "upper_worker": "P"
+              },
+              null,
+              null,
+              {
+                "sector_name": "TOP",
+                "lower_worker": "M",
+                "upper_worker": "L"
+              }
+            ]
+          },
+          {
+            "hour": "11:00–12:00",
+            "open_sectors": 4,
+            "workers": [
+              "A",
+              "E",
+              "R",
+              "Q",
+              "S",
+              "O",
+              "N",
+              "M"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "A",
+                "upper_worker": "E"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "R",
+                "upper_worker": "Q"
+              },
+              null,
+              {
+                "sector_name": "HIGH",
+                "lower_worker": "S",
+                "upper_worker": "O"
+              },
+              {
+                "sector_name": "TOP",
+                "lower_worker": "N",
+                "upper_worker": "M"
+              }
+            ]
+          },
+          {
+            "hour": "12:00–13:00",
+            "open_sectors": 4,
+            "workers": [
+              "F",
+              "D",
+              "P",
+              "R",
+              "O",
+              "S",
+              "L",
+              "N"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "F",
+                "upper_worker": "D"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "P",
+                "upper_worker": "R"
+              },
+              null,
+              {
+                "sector_name": "HIGH",
+                "lower_worker": "O",
+                "upper_worker": "S"
+              },
+              {
+                "sector_name": "TOP",
+                "lower_worker": "L",
+                "upper_worker": "N"
+              }
+            ]
+          },
+          {
+            "hour": "13:00–14:00",
+            "open_sectors": 4,
+            "workers": [
+              "D",
+              "F",
+              "Q",
+              "P",
+              "E",
+              "M",
+              "W",
+              "L"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "D",
+                "upper_worker": "F"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "Q",
+                "upper_worker": "P"
+              },
+              null,
+              {
+                "sector_name": "HIGH",
+                "lower_worker": "E",
+                "upper_worker": "M"
+              },
+              {
+                "sector_name": "TOP",
+                "lower_worker": "W",
+                "upper_worker": "L"
+              }
+            ]
+          },
+          {
+            "hour": "14:00–15:00",
+            "open_sectors": 4,
+            "workers": [
+              "H",
+              "G",
+              "T",
+              "Q",
+              "S",
+              "U",
+              "O",
+              "N"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "H",
+                "upper_worker": "G"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "T",
+                "upper_worker": "Q"
+              },
+              null,
+              {
+                "sector_name": "HIGH",
+                "lower_worker": "S",
+                "upper_worker": "U"
+              },
+              {
+                "sector_name": "TOP",
+                "lower_worker": "O",
+                "upper_worker": "N"
+              }
+            ]
+          },
+          {
+            "hour": "15:00–16:00",
+            "open_sectors": 4,
+            "workers": [
+              "F",
+              "H",
+              "R",
+              "P",
+              "U",
+              "S",
+              "N",
+              "O"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "F",
+                "upper_worker": "H"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "R",
+                "upper_worker": "P"
+              },
+              null,
+              {
+                "sector_name": "HIGH",
+                "lower_worker": "U",
+                "upper_worker": "S"
+              },
+              {
+                "sector_name": "TOP",
+                "lower_worker": "N",
+                "upper_worker": "O"
+              }
+            ]
+          },
+          {
+            "hour": "16:00–17:00",
+            "open_sectors": 3,
+            "workers": [
+              "G",
+              "F",
+              "P",
+              "R",
+              "Q",
+              "T"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "G",
+                "upper_worker": "F"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "P",
+                "upper_worker": "R"
+              },
+              null,
+              null,
+              {
+                "sector_name": "TOP",
+                "lower_worker": "Q",
+                "upper_worker": "T"
+              }
+            ]
+          },
+          {
+            "hour": "17:00–18:00",
+            "open_sectors": 3,
+            "workers": [
+              "H",
+              "G",
+              "U",
+              "S",
+              "T",
+              "Q"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "H",
+                "upper_worker": "G"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "U",
+                "upper_worker": "S"
+              },
+              null,
+              null,
+              {
+                "sector_name": "TOP",
+                "lower_worker": "T",
+                "upper_worker": "Q"
+              }
+            ]
+          },
+          {
+            "hour": "18:00–19:00",
+            "open_sectors": 3,
+            "workers": [
+              "B",
+              "H",
+              "S",
+              "U",
+              "V",
+              "R"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "B",
+                "upper_worker": "H"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "S",
+                "upper_worker": "U"
+              },
+              null,
+              null,
+              {
+                "sector_name": "TOP",
+                "lower_worker": "V",
+                "upper_worker": "R"
+              }
+            ]
+          },
+          {
+            "hour": "19:00–20:00",
+            "open_sectors": 2,
+            "workers": [
+              "G",
+              "B",
+              "V",
+              "T"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "G",
+                "upper_worker": "B"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "V",
+                "upper_worker": "T"
+              },
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "hour": "20:00–21:00",
+            "open_sectors": 2,
+            "workers": [
+              "H",
+              "G",
+              "T",
+              "U"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "H",
+                "upper_worker": "G"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "T",
+                "upper_worker": "U"
+              },
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "hour": "21:00–22:00",
+            "open_sectors": 2,
+            "workers": [
+              "K",
+              "J",
+              "V",
+              "I"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "K",
+                "upper_worker": "J"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "V",
+                "upper_worker": "I"
+              },
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "hour": "22:00–23:00",
+            "open_sectors": 2,
+            "workers": [
+              "J",
+              "K",
+              "C",
+              "V"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "J",
+                "upper_worker": "K"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "C",
+                "upper_worker": "V"
+              },
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "hour": "23:00–00:00",
+            "open_sectors": 1,
+            "workers": [
+              "I",
+              "C"
+            ],
+            "sector_workers": [
+              {
+                "sector_name": "ALL",
+                "lower_worker": "I",
+                "upper_worker": "C"
+              },
+              null,
+              null,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "hour": "00:00–01:00",
+            "open_sectors": 1,
+            "workers": [
+              "K",
+              "J"
+            ],
+            "sector_workers": [
+              {
+                "sector_name": "ALL",
+                "lower_worker": "K",
+                "upper_worker": "J"
+              },
+              null,
+              null,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "hour": "01:00–02:00",
+            "open_sectors": 1,
+            "workers": [
+              "I",
+              "K"
+            ],
+            "sector_workers": [
+              {
+                "sector_name": "ALL",
+                "lower_worker": "I",
+                "upper_worker": "K"
+              },
+              null,
+              null,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "hour": "02:00–03:00",
+            "open_sectors": 1,
+            "workers": [
+              "J",
+              "I"
+            ],
+            "sector_workers": [
+              {
+                "sector_name": "ALL",
+                "lower_worker": "J",
+                "upper_worker": "I"
+              },
+              null,
+              null,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "hour": "03:00–04:00",
+            "open_sectors": 1,
+            "workers": [
+              "K",
+              "J"
+            ],
+            "sector_workers": [
+              {
+                "sector_name": "ALL",
+                "lower_worker": "K",
+                "upper_worker": "J"
+              },
+              null,
+              null,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "hour": "04:00–05:00",
+            "open_sectors": 1,
+            "workers": [
+              "I",
+              "K"
+            ],
+            "sector_workers": [
+              {
+                "sector_name": "ALL",
+                "lower_worker": "I",
+                "upper_worker": "K"
+              },
+              null,
+              null,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "hour": "05:00–06:00",
+            "open_sectors": 1,
+            "workers": [
+              "J",
+              "C"
+            ],
+            "sector_workers": [
+              {
+                "sector_name": "ALL",
+                "lower_worker": "J",
+                "upper_worker": "C"
+              },
+              null,
+              null,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "hour": "06:00–07:00",
+            "open_sectors": 2,
+            "workers": [
+              "K",
+              "C",
+              "J",
+              "I"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "K",
+                "upper_worker": "C"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "J",
+                "upper_worker": "I"
+              },
+              null,
+              null,
+              null
+            ]
+          }
+        ],
+        "pareto_points": [],
+        "notes": [
+          "Na voljo je 1 operativnih officev iz priporočilnega modula; CP-SAT sam izbere najmanj potrebne office izmene.",
+          "Osnovno izhodišče pred CP-SAT: 57 SH × 2 = 114 kontrolorskih ur; ceil(114/5) = 23; urna konica zahteva 8; osnovni n5 minimum = 23 ljudi.",
+          "Način 2 uporablja OR-Tools CP-SAT: najprej maksimizira pokrite sektorje, nato minimizira število ljudi znotraj limita.",
+          "Operativni office pool je bil uporabljen šele kot fallback po rednih možnostih; redna rešitev je imela 0/57 SH.",
+          "FL/APS/ACS se v tem načinu berejo kot mehko ciljno razmerje (FL 50 %, APS 0 %, ACS 50 %), ne kot trde zgornje meje.",
+          "Skupno število ljudi je omejeno na največ 22.",
+          "Pri enaki pokritosti in številu ljudi CP-SAT izbere zasedbo z manj neizkoriščene kapacitete izmen.",
+          "Status CP-SAT rešitve: FEASIBLE.",
+          "Politika izračuna je samodejno ustavila CP-SAT: brez izboljšanja pokritosti 60 s; najboljša rešitev pokriva 57/57 sektorskih ur, meja največ 57, razlika 0.",
+          "Dokazana zgornja meja po trenutnem CP-SAT boundu je 57 sektorskih ur (razlika 0).",
+          "ALL sektor zahteva 2× FL; LOWER sprejme APS/FL; UPPER, MID, HIGH in TOP sprejmejo ACS/FL.",
+          "Razpored se po CP-SAT rešitvi lokalno zgladi: če ne zmanjša pokritosti, ohrani isti sektor in zamenja levo/desno pozicijo po eni uri.",
+          "Uporabljenih je 1 officerjev iz pisarne.",
+          "Office sektorske ure imajo mehko prednost na začetku ali koncu office izmene; sredina se uporabi, kadar izboljša pokritost."
+        ],
+        "warnings": []
+      }
+    },
+    {
+      "id": "user:20260617145737-8ece3814",
+      "name": "28s5 -1",
+      "created_at": "2026-06-17T14:57:37.256235+00:00",
+      "note": null,
+      "result": {
+        "feasible": true,
+        "max_sector_hours": 70,
+        "requested_sector_hours": 70,
+        "solver_upper_bound_sector_hours": 70,
+        "solver_gap_to_upper_bound": 0,
+        "solver_status": "FEASIBLE",
+        "solver_optimality_gap_percent": 0.0,
+        "missing_sector_hours": 0,
+        "baseline_min_people": 28,
+        "baseline_min_people_formula": "70 SH × 2 = 140 kontrolorskih ur; ceil(140/5) = 28; urna konica zahteva 8; osnovni n5 minimum = 28 ljudi.",
+        "minimum_required_fl": 10,
+        "planned_people": 27,
+        "active_people": 27,
+        "unused_people": 0,
+        "scheduled_person_hours": 140,
+        "total_person_capacity_hours": 144,
+        "utilization_percent": 97,
+        "people": [
+          {
+            "id": "A",
+            "license": "FL",
+            "shift": "A7",
+            "role": "V1",
+            "sector_hours": 2,
+            "max_sector_hours": 2,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "B",
+            "license": "FL",
+            "shift": "A14",
+            "role": "V2",
+            "sector_hours": 2,
+            "max_sector_hours": 2,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "C",
+            "license": "FL",
+            "shift": "A21",
+            "role": "V3",
+            "sector_hours": 2,
+            "max_sector_hours": 2,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "D",
+            "license": "FL",
+            "shift": "A9",
+            "role": "FMP",
+            "sector_hours": 3,
+            "max_sector_hours": 3,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "E",
+            "license": "APS",
+            "shift": "A7",
+            "role": null,
+            "sector_hours": 5,
+            "max_sector_hours": 5,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "F",
+            "license": "APS",
+            "shift": "A7",
+            "role": null,
+            "sector_hours": 5,
+            "max_sector_hours": 5,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "G",
+            "license": "ACS",
+            "shift": "A7",
+            "role": null,
+            "sector_hours": 5,
+            "max_sector_hours": 5,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "H",
+            "license": "ACS",
+            "shift": "A7",
+            "role": null,
+            "sector_hours": 5,
+            "max_sector_hours": 5,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "I",
+            "license": "ACS",
+            "shift": "A7",
+            "role": null,
+            "sector_hours": 5,
+            "max_sector_hours": 5,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "J",
+            "license": "APS",
+            "shift": "A8",
+            "role": null,
+            "sector_hours": 6,
+            "max_sector_hours": 6,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "K",
+            "license": "ACS",
+            "shift": "A8",
+            "role": null,
+            "sector_hours": 6,
+            "max_sector_hours": 6,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "L",
+            "license": "ACS",
+            "shift": "A11",
+            "role": null,
+            "sector_hours": 6,
+            "max_sector_hours": 6,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "M",
+            "license": "APS",
+            "shift": "A14",
+            "role": null,
+            "sector_hours": 5,
+            "max_sector_hours": 5,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "N",
+            "license": "APS",
+            "shift": "A15",
+            "role": null,
+            "sector_hours": 6,
+            "max_sector_hours": 6,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "O",
+            "license": "ACS",
+            "shift": "A15",
+            "role": null,
+            "sector_hours": 6,
+            "max_sector_hours": 6,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "P",
+            "license": "ACS",
+            "shift": "A16",
+            "role": null,
+            "sector_hours": 6,
+            "max_sector_hours": 6,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "Q",
+            "license": "ACS",
+            "shift": "A16",
+            "role": null,
+            "sector_hours": 5,
+            "max_sector_hours": 6,
+            "utilization_percent": 83,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "R",
+            "license": "APS",
+            "shift": "A17",
+            "role": null,
+            "sector_hours": 6,
+            "max_sector_hours": 6,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "S",
+            "license": "ACS",
+            "shift": "A17",
+            "role": null,
+            "sector_hours": 6,
+            "max_sector_hours": 6,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "T",
+            "license": "FL",
+            "shift": "A21",
+            "role": null,
+            "sector_hours": 7,
+            "max_sector_hours": 7,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "U",
+            "license": "FL",
+            "shift": "A21",
+            "role": null,
+            "sector_hours": 7,
+            "max_sector_hours": 7,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "V",
+            "license": "FL",
+            "shift": "A21",
+            "role": null,
+            "sector_hours": 6,
+            "max_sector_hours": 7,
+            "utilization_percent": 86,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "W",
+            "license": "FL",
+            "shift": "A9",
+            "role": null,
+            "sector_hours": 6,
+            "max_sector_hours": 6,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "X",
+            "license": "FL",
+            "shift": "A9",
+            "role": null,
+            "sector_hours": 5,
+            "max_sector_hours": 6,
+            "utilization_percent": 83,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "Y",
+            "license": "FL",
+            "shift": "A9",
+            "role": null,
+            "sector_hours": 5,
+            "max_sector_hours": 6,
+            "utilization_percent": 83,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "Z",
+            "license": "ACS",
+            "shift": "A11",
+            "role": null,
+            "sector_hours": 6,
+            "max_sector_hours": 6,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          },
+          {
+            "id": "AA",
+            "license": "ACS",
+            "shift": "A13",
+            "role": null,
+            "sector_hours": 6,
+            "max_sector_hours": 6,
+            "utilization_percent": 100,
+            "used_as_sector_controller": true,
+            "source": "regular"
+          }
+        ],
+        "shift_summary": [
+          {
+            "shift": "A7",
+            "fl": 0,
+            "aps": 2,
+            "acs": 3,
+            "total": 5
+          },
+          {
+            "shift": "V1/A7",
+            "fl": 1,
+            "aps": 0,
+            "acs": 0,
+            "total": 1
+          },
+          {
+            "shift": "A8",
+            "fl": 0,
+            "aps": 1,
+            "acs": 1,
+            "total": 2
+          },
+          {
+            "shift": "A9",
+            "fl": 3,
+            "aps": 0,
+            "acs": 0,
+            "total": 3
+          },
+          {
+            "shift": "FMP/A9",
+            "fl": 1,
+            "aps": 0,
+            "acs": 0,
+            "total": 1
+          },
+          {
+            "shift": "A11",
+            "fl": 0,
+            "aps": 0,
+            "acs": 2,
+            "total": 2
+          },
+          {
+            "shift": "A13",
+            "fl": 0,
+            "aps": 0,
+            "acs": 1,
+            "total": 1
+          },
+          {
+            "shift": "A14",
+            "fl": 0,
+            "aps": 1,
+            "acs": 0,
+            "total": 1
+          },
+          {
+            "shift": "V2/A14",
+            "fl": 1,
+            "aps": 0,
+            "acs": 0,
+            "total": 1
+          },
+          {
+            "shift": "A15",
+            "fl": 0,
+            "aps": 1,
+            "acs": 1,
+            "total": 2
+          },
+          {
+            "shift": "A16",
+            "fl": 0,
+            "aps": 0,
+            "acs": 2,
+            "total": 2
+          },
+          {
+            "shift": "A17",
+            "fl": 0,
+            "aps": 1,
+            "acs": 1,
+            "total": 2
+          },
+          {
+            "shift": "A21",
+            "fl": 3,
+            "aps": 0,
+            "acs": 0,
+            "total": 3
+          },
+          {
+            "shift": "V3/A21",
+            "fl": 1,
+            "aps": 0,
+            "acs": 0,
+            "total": 1
+          }
+        ],
+        "hourly_coverage": [
+          {
+            "hour": "07:00–08:00",
+            "open_sectors": 3,
+            "workers": [
+              "F",
+              "E",
+              "I",
+              "H",
+              "G",
+              "A"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "F",
+                "upper_worker": "E"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "I",
+                "upper_worker": "H"
+              },
+              null,
+              null,
+              {
+                "sector_name": "TOP",
+                "lower_worker": "G",
+                "upper_worker": "A"
+              }
+            ]
+          },
+          {
+            "hour": "08:00–09:00",
+            "open_sectors": 3,
+            "workers": [
+              "J",
+              "F",
+              "H",
+              "K",
+              "A",
+              "G"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "J",
+                "upper_worker": "F"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "H",
+                "upper_worker": "K"
+              },
+              null,
+              null,
+              {
+                "sector_name": "TOP",
+                "lower_worker": "A",
+                "upper_worker": "G"
+              }
+            ]
+          },
+          {
+            "hour": "09:00–10:00",
+            "open_sectors": 4,
+            "workers": [
+              "E",
+              "J",
+              "K",
+              "X",
+              "W",
+              "Y",
+              "I",
+              "D"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "E",
+                "upper_worker": "J"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "K",
+                "upper_worker": "X"
+              },
+              null,
+              {
+                "sector_name": "HIGH",
+                "lower_worker": "W",
+                "upper_worker": "Y"
+              },
+              {
+                "sector_name": "TOP",
+                "lower_worker": "I",
+                "upper_worker": "D"
+              }
+            ]
+          },
+          {
+            "hour": "10:00–11:00",
+            "open_sectors": 4,
+            "workers": [
+              "F",
+              "E",
+              "X",
+              "H",
+              "Y",
+              "W",
+              "G",
+              "I"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "F",
+                "upper_worker": "E"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "X",
+                "upper_worker": "H"
+              },
+              null,
+              {
+                "sector_name": "HIGH",
+                "lower_worker": "Y",
+                "upper_worker": "W"
+              },
+              {
+                "sector_name": "TOP",
+                "lower_worker": "G",
+                "upper_worker": "I"
+              }
+            ]
+          },
+          {
+            "hour": "11:00–12:00",
+            "open_sectors": 4,
+            "workers": [
+              "J",
+              "F",
+              "H",
+              "L",
+              "K",
+              "Z",
+              "D",
+              "G"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "J",
+                "upper_worker": "F"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "H",
+                "upper_worker": "L"
+              },
+              null,
+              {
+                "sector_name": "HIGH",
+                "lower_worker": "K",
+                "upper_worker": "Z"
+              },
+              {
+                "sector_name": "TOP",
+                "lower_worker": "D",
+                "upper_worker": "G"
+              }
+            ]
+          },
+          {
+            "hour": "12:00–13:00",
+            "open_sectors": 4,
+            "workers": [
+              "E",
+              "J",
+              "L",
+              "X",
+              "Z",
+              "K",
+              "W",
+              "I"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "E",
+                "upper_worker": "J"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "L",
+                "upper_worker": "X"
+              },
+              null,
+              {
+                "sector_name": "HIGH",
+                "lower_worker": "Z",
+                "upper_worker": "K"
+              },
+              {
+                "sector_name": "TOP",
+                "lower_worker": "W",
+                "upper_worker": "I"
+              }
+            ]
+          },
+          {
+            "hour": "13:00–14:00",
+            "open_sectors": 4,
+            "workers": [
+              "F",
+              "E",
+              "AA",
+              "Y",
+              "H",
+              "G",
+              "I",
+              "W"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "F",
+                "upper_worker": "E"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "AA",
+                "upper_worker": "Y"
+              },
+              null,
+              {
+                "sector_name": "HIGH",
+                "lower_worker": "H",
+                "upper_worker": "G"
+              },
+              {
+                "sector_name": "TOP",
+                "lower_worker": "I",
+                "upper_worker": "W"
+              }
+            ]
+          },
+          {
+            "hour": "14:00–15:00",
+            "open_sectors": 4,
+            "workers": [
+              "M",
+              "J",
+              "Z",
+              "AA",
+              "X",
+              "L",
+              "K",
+              "D"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "M",
+                "upper_worker": "J"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "Z",
+                "upper_worker": "AA"
+              },
+              null,
+              {
+                "sector_name": "HIGH",
+                "lower_worker": "X",
+                "upper_worker": "L"
+              },
+              {
+                "sector_name": "TOP",
+                "lower_worker": "K",
+                "upper_worker": "D"
+              }
+            ]
+          },
+          {
+            "hour": "15:00–16:00",
+            "open_sectors": 4,
+            "workers": [
+              "J",
+              "N",
+              "Y",
+              "Z",
+              "L",
+              "O",
+              "W",
+              "K"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "J",
+                "upper_worker": "N"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "Y",
+                "upper_worker": "Z"
+              },
+              null,
+              {
+                "sector_name": "HIGH",
+                "lower_worker": "L",
+                "upper_worker": "O"
+              },
+              {
+                "sector_name": "TOP",
+                "lower_worker": "W",
+                "upper_worker": "K"
+              }
+            ]
+          },
+          {
+            "hour": "16:00–17:00",
+            "open_sectors": 4,
+            "workers": [
+              "N",
+              "M",
+              "AA",
+              "Y",
+              "O",
+              "P",
+              "X",
+              "W"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "N",
+                "upper_worker": "M"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "AA",
+                "upper_worker": "Y"
+              },
+              null,
+              {
+                "sector_name": "HIGH",
+                "lower_worker": "O",
+                "upper_worker": "P"
+              },
+              {
+                "sector_name": "TOP",
+                "lower_worker": "X",
+                "upper_worker": "W"
+              }
+            ]
+          },
+          {
+            "hour": "17:00–18:00",
+            "open_sectors": 4,
+            "workers": [
+              "M",
+              "R",
+              "S",
+              "AA",
+              "P",
+              "Z",
+              "Q",
+              "L"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "M",
+                "upper_worker": "R"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "S",
+                "upper_worker": "AA"
+              },
+              null,
+              {
+                "sector_name": "HIGH",
+                "lower_worker": "P",
+                "upper_worker": "Z"
+              },
+              {
+                "sector_name": "TOP",
+                "lower_worker": "Q",
+                "upper_worker": "L"
+              }
+            ]
+          },
+          {
+            "hour": "18:00–19:00",
+            "open_sectors": 4,
+            "workers": [
+              "R",
+              "N",
+              "B",
+              "S",
+              "Z",
+              "O",
+              "L",
+              "Q"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "R",
+                "upper_worker": "N"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "B",
+                "upper_worker": "S"
+              },
+              null,
+              {
+                "sector_name": "HIGH",
+                "lower_worker": "Z",
+                "upper_worker": "O"
+              },
+              {
+                "sector_name": "TOP",
+                "lower_worker": "L",
+                "upper_worker": "Q"
+              }
+            ]
+          },
+          {
+            "hour": "19:00–20:00",
+            "open_sectors": 3,
+            "workers": [
+              "N",
+              "M",
+              "P",
+              "B",
+              "O",
+              "AA"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "N",
+                "upper_worker": "M"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "P",
+                "upper_worker": "B"
+              },
+              null,
+              null,
+              {
+                "sector_name": "TOP",
+                "lower_worker": "O",
+                "upper_worker": "AA"
+              }
+            ]
+          },
+          {
+            "hour": "20:00–21:00",
+            "open_sectors": 3,
+            "workers": [
+              "M",
+              "R",
+              "S",
+              "P",
+              "AA",
+              "Q"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "M",
+                "upper_worker": "R"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "S",
+                "upper_worker": "P"
+              },
+              null,
+              null,
+              {
+                "sector_name": "TOP",
+                "lower_worker": "AA",
+                "upper_worker": "Q"
+              }
+            ]
+          },
+          {
+            "hour": "21:00–22:00",
+            "open_sectors": 3,
+            "workers": [
+              "R",
+              "N",
+              "T",
+              "S",
+              "U",
+              "O"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "R",
+                "upper_worker": "N"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "T",
+                "upper_worker": "S"
+              },
+              null,
+              null,
+              {
+                "sector_name": "TOP",
+                "lower_worker": "U",
+                "upper_worker": "O"
+              }
+            ]
+          },
+          {
+            "hour": "22:00–23:00",
+            "open_sectors": 3,
+            "workers": [
+              "N",
+              "V",
+              "Q",
+              "T",
+              "O",
+              "P"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "N",
+                "upper_worker": "V"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "Q",
+                "upper_worker": "T"
+              },
+              null,
+              null,
+              {
+                "sector_name": "TOP",
+                "lower_worker": "O",
+                "upper_worker": "P"
+              }
+            ]
+          },
+          {
+            "hour": "23:00–00:00",
+            "open_sectors": 3,
+            "workers": [
+              "V",
+              "R",
+              "S",
+              "Q",
+              "P",
+              "U"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "V",
+                "upper_worker": "R"
+              },
+              {
+                "sector_name": "UPPER",
+                "lower_worker": "S",
+                "upper_worker": "Q"
+              },
+              null,
+              null,
+              {
+                "sector_name": "TOP",
+                "lower_worker": "P",
+                "upper_worker": "U"
+              }
+            ]
+          },
+          {
+            "hour": "00:00–01:00",
+            "open_sectors": 2,
+            "workers": [
+              "R",
+              "T",
+              "U",
+              "S"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "R",
+                "upper_worker": "T"
+              },
+              null,
+              null,
+              null,
+              {
+                "sector_name": "TOP",
+                "lower_worker": "U",
+                "upper_worker": "S"
+              }
+            ]
+          },
+          {
+            "hour": "01:00–02:00",
+            "open_sectors": 1,
+            "workers": [
+              "V",
+              "T"
+            ],
+            "sector_workers": [
+              {
+                "sector_name": "ALL",
+                "lower_worker": "V",
+                "upper_worker": "T"
+              },
+              null,
+              null,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "hour": "02:00–03:00",
+            "open_sectors": 1,
+            "workers": [
+              "U",
+              "V"
+            ],
+            "sector_workers": [
+              {
+                "sector_name": "ALL",
+                "lower_worker": "U",
+                "upper_worker": "V"
+              },
+              null,
+              null,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "hour": "03:00–04:00",
+            "open_sectors": 1,
+            "workers": [
+              "T",
+              "U"
+            ],
+            "sector_workers": [
+              {
+                "sector_name": "ALL",
+                "lower_worker": "T",
+                "upper_worker": "U"
+              },
+              null,
+              null,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "hour": "04:00–05:00",
+            "open_sectors": 1,
+            "workers": [
+              "V",
+              "C"
+            ],
+            "sector_workers": [
+              {
+                "sector_name": "ALL",
+                "lower_worker": "V",
+                "upper_worker": "C"
+              },
+              null,
+              null,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "hour": "05:00–06:00",
+            "open_sectors": 1,
+            "workers": [
+              "U",
+              "T"
+            ],
+            "sector_workers": [
+              {
+                "sector_name": "ALL",
+                "lower_worker": "U",
+                "upper_worker": "T"
+              },
+              null,
+              null,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "hour": "06:00–07:00",
+            "open_sectors": 2,
+            "workers": [
+              "V",
+              "U",
+              "T",
+              "C"
+            ],
+            "sector_workers": [
+              null,
+              {
+                "sector_name": "LOWER",
+                "lower_worker": "V",
+                "upper_worker": "U"
+              },
+              null,
+              null,
+              null,
+              {
+                "sector_name": "TOP",
+                "lower_worker": "T",
+                "upper_worker": "C"
+              }
+            ]
+          }
+        ],
+        "pareto_points": [],
+        "notes": [
+          "Osnovno izhodišče pred CP-SAT: 70 SH × 2 = 140 kontrolorskih ur; ceil(140/5) = 28; urna konica zahteva 8; osnovni n5 minimum = 28 ljudi.",
+          "Način 2 uporablja OR-Tools CP-SAT: najprej maksimizira pokrite sektorje, nato minimizira število ljudi znotraj limita.",
+          "Feasibility faza je našla razpored, ki pokrije vse zahtevane sektorske ure.",
+          "Prvi polno pokrit people-limit razpored je bil najden s seed bazo 27n5 (27 ljudi, seed SH 70).",
+          "FL/APS/ACS se v tem načinu berejo kot mehko ciljno razmerje (FL 7 %, APS 6 %, ACS 15 %), ne kot trde zgornje meje.",
+          "Skupno število ljudi je omejeno na največ 27.",
+          "Pri enaki pokritosti in številu ljudi CP-SAT izbere zasedbo z manj neizkoriščene kapacitete izmen.",
+          "Status CP-SAT rešitve: FEASIBLE.",
+          "Dokazana zgornja meja po trenutnem CP-SAT boundu je 70 sektorskih ur (razlika 0).",
+          "ALL sektor zahteva 2× FL; LOWER sprejme APS/FL; UPPER, MID, HIGH in TOP sprejmejo ACS/FL.",
+          "Razpored se po CP-SAT rešitvi lokalno zgladi: če ne zmanjša pokritosti, ohrani isti sektor in zamenja levo/desno pozicijo po eni uri."
+        ],
+        "warnings": []
+      }
+    }
+  ]
+}
