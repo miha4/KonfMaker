@@ -9,7 +9,7 @@
     "dev": "./scripts/start-dev.sh",
     "start:codespaces": "./scripts/start-codespaces.sh",
     "desktop:prepare-backend": "./scripts/prepare-desktop-backend.sh",
-    "desktop:build-frontend": "cd frontend && VITE_API_BASE_URL=http://127.0.0.1:8765 npm run build",
+    "desktop:build-frontend": "node scripts/build-frontend-desktop.cjs",
     "desktop:dev": "npm run desktop:prepare-backend && npm run desktop:build-frontend && electron .",
     "desktop:bundle-backend": "node scripts/build-backend-sidecar.cjs",
     "desktop:build:mac": "npm run desktop:bundle-backend && npm run desktop:build-frontend && electron-builder --mac",
