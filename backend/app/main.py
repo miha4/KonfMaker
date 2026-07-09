@@ -26,6 +26,7 @@ from .jobs import (
     create_pareto_job,
     get_job_result,
     get_job_status,
+    list_jobs,
 )
 from .models import (
     CalculatorRequest,
@@ -236,6 +237,11 @@ def start_manual_configuration_one_down_job(
 @app.post("/api/jobs/pareto-analysis")
 def start_pareto_job(request: CalculatorRequest) -> dict[str, str]:
     return create_pareto_job(request)
+
+
+@app.get("/api/jobs")
+def calculation_jobs() -> list[dict[str, object]]:
+    return list_jobs()
 
 
 @app.get("/api/jobs/{job_id}")

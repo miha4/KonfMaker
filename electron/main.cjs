@@ -10,6 +10,10 @@ const ROOT_DIR = path.resolve(__dirname, '..');
 
 let mainWindow = null;
 let backendProcess = null;
+let backendStopRequested = false;
+let backendStopPromise = null;
+let backendShutdownComplete = false;
+let quitAfterBackendStopRequested = false;
 
 function appResourcePath(...parts) {
   return app.isPackaged ? path.join(process.resourcesPath, ...parts) : path.join(ROOT_DIR, ...parts);
@@ -21,6 +25,13 @@ function fileExists(filePath) {
   } catch {
     return false;
   }
+}
+
+function appIconPath() {
+  const iconPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'app.asar', 'build', 'icon.png')
+    : path.join(ROOT_DIR, 'build', 'icon.png');
+  return fileExists(iconPath) ? iconPath : undefined;
 }
 
 function copyIfMissing(sourcePath, targetPath) {
@@ -72,6 +83,8 @@ function backendEnvironment() {
 
 function startBackend() {
   const env = backendEnvironment();
+  backendStopRequested = false;
+  backendShutdownComplete = false;
 
   if (app.isPackaged) {
     const enginePath = packagedEnginePath();
@@ -81,7 +94,9 @@ function startBackend() {
     backendProcess = spawn(enginePath, [], {
       cwd: path.dirname(enginePath),
       env,
+      detached: process.platform !== 'win32',
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
     });
   } else {
     const python = findDevPython();
@@ -91,11 +106,14 @@ function startBackend() {
       {
         cwd: path.join(ROOT_DIR, 'backend'),
         env,
+        detached: process.platform !== 'win32',
         stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
       },
     );
   }
 
+  const child = backendProcess;
   backendProcess.stdout?.on('data', (chunk) => {
     process.stdout.write(`[konfmaker-engine] ${chunk}`);
   });
@@ -103,6 +121,10 @@ function startBackend() {
     process.stderr.write(`[konfmaker-engine] ${chunk}`);
   });
   backendProcess.on('exit', (code, signal) => {
+    if (backendProcess === child) {
+      backendProcess = null;
+      backendShutdownComplete = true;
+    }
     if (!app.isQuitting) {
       console.error(`KonfMaker engine se je ustavil. code=${code} signal=${signal}`);
     }
@@ -110,11 +132,102 @@ function startBackend() {
 }
 
 function stopBackend() {
-  if (!backendProcess || backendProcess.killed) {
+  if (backendStopPromise) {
+    return backendStopPromise;
+  }
+  if (!backendProcess) {
+    backendShutdownComplete = true;
+    return Promise.resolve();
+  }
+  backendStopRequested = true;
+  const child = backendProcess;
+  backendProcess = null;
+
+  if (!child.pid) {
+    backendShutdownComplete = true;
+    return Promise.resolve();
+  }
+
+  backendStopPromise = new Promise((resolve) => {
+    let settled = false;
+    let forceKillTimer = null;
+    let giveUpTimer = null;
+    const finish = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (forceKillTimer) {
+        clearTimeout(forceKillTimer);
+      }
+      if (giveUpTimer) {
+        clearTimeout(giveUpTimer);
+      }
+      backendShutdownComplete = true;
+      resolve();
+    };
+
+    child.once('exit', finish);
+    child.once('close', finish);
+
+    if (process.platform === 'win32') {
+      const killer = spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], {
+        windowsHide: true,
+        stdio: 'ignore',
+      });
+      killer.on('error', () => {
+        try {
+          child.kill();
+        } catch {
+          // The app is already quitting; there is nothing useful to surface here.
+        }
+      });
+      killer.on('close', finish);
+      giveUpTimer = setTimeout(finish, 3000);
+      return;
+    }
+
+    const killProcessGroup = (signal) => {
+      try {
+        process.kill(-child.pid, signal);
+      } catch {
+        try {
+          child.kill(signal);
+        } catch {
+          // Ignore shutdown races.
+        }
+      }
+    };
+
+    killProcessGroup('SIGTERM');
+
+    forceKillTimer = setTimeout(() => {
+      if (child.exitCode === null && child.signalCode === null) {
+        killProcessGroup('SIGKILL');
+      }
+    }, 1500);
+    giveUpTimer = setTimeout(finish, 3500);
+  }).finally(() => {
+    backendStopPromise = null;
+  });
+
+  return backendStopPromise;
+}
+
+function needsBackendShutdown() {
+  return !backendShutdownComplete && (backendProcess || backendStopPromise);
+}
+
+function quitAfterBackendStop() {
+  if (quitAfterBackendStopRequested) {
     return;
   }
-  backendProcess.kill();
-  backendProcess = null;
+  quitAfterBackendStopRequested = true;
+  app.isQuitting = true;
+  stopBackend().finally(() => {
+    quitAfterBackendStopRequested = false;
+    app.quit();
+  });
 }
 
 function backendHealthCheck() {
@@ -197,6 +310,7 @@ function createWindow() {
     height: 960,
     minWidth: 1180,
     minHeight: 780,
+    icon: appIconPath(),
     backgroundColor: '#e7eef5',
     show: false,
     webPreferences: {
@@ -207,6 +321,15 @@ function createWindow() {
   });
 
   mainWindow.setMenuBarVisibility(false);
+  mainWindow.on('close', (event) => {
+    if (needsBackendShutdown()) {
+      event.preventDefault();
+      quitAfterBackendStop();
+    }
+  });
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
   mainWindow.once('ready-to-show', () => mainWindow.show());
   mainWindow.webContents.on('will-navigate', (event) => {
     const targetUrl = event.url;
@@ -267,9 +390,16 @@ if (!gotLock) {
   });
 
   app.whenReady().then(boot);
-  app.on('before-quit', () => {
+  app.on('before-quit', (event) => {
     app.isQuitting = true;
-    stopBackend();
+    if (needsBackendShutdown()) {
+      event.preventDefault();
+      quitAfterBackendStop();
+    }
+  });
+  app.on('will-quit', () => {
+    app.isQuitting = true;
+    void stopBackend();
   });
   app.on('window-all-closed', () => {
     app.quit();

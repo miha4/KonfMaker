@@ -1081,6 +1081,26 @@ def _configuration_has_fmp(detail: dict[str, object]) -> bool:
     return False
 
 
+def _configuration_fmp_shift(detail: dict[str, object]) -> str | None:
+    fixed_staff = detail.get("fixed_staff")
+    if isinstance(fixed_staff, list):
+        for item in fixed_staff:
+            if isinstance(item, dict) and item.get("role") == "FMP":
+                shift = item.get("shift")
+                if isinstance(shift, str) and shift.strip():
+                    return shift.strip()
+    manual_schedule = detail.get("manual_schedule")
+    if isinstance(manual_schedule, dict):
+        people = manual_schedule.get("people")
+        if isinstance(people, list):
+            for person in people:
+                if isinstance(person, dict) and person.get("role") == "FMP":
+                    shift = person.get("shift")
+                    if isinstance(shift, str) and shift.strip():
+                        return shift.strip()
+    return None
+
+
 def _license_ratio_from_detail(detail: dict[str, object]) -> dict[str, int]:
     raw_counts = detail.get("license_counts")
     counts = raw_counts if isinstance(raw_counts, dict) else {}
@@ -1297,6 +1317,7 @@ def manual_configuration_one_down(
 
     ratio = _license_ratio_from_detail(detail)
     include_fmp = _configuration_has_fmp(detail)
+    fmp_shift = _configuration_fmp_shift(detail) or "A9"
     settings = settings_for_manual_schedule_evaluation(
         manual_schedule,
         time_limit_seconds,
@@ -1334,6 +1355,8 @@ def manual_configuration_one_down(
             aps_count=0,
             acs_count=0,
             include_fmp=current_include_fmp,
+            fmp_shift_mode="fixed" if current_include_fmp else "auto",
+            fmp_shift=fmp_shift,
             settings=current_settings,
             requested_sector_counts=requested_sector_counts,
             fixed_staff=[],
@@ -1393,11 +1416,14 @@ def manual_configuration_one_down(
             "cache_status": None,
             "message": None,
         }
-        if request.officer_staff:
+        if request.officer_staff or request.include_fmp:
             pattern_payload.update(
                 {
                     "checked": True,
-                    "message": "Pattern predpreverjanje je preskočeno, ker konfiguracija vsebuje konkretne office izmene.",
+                    "message": (
+                        "Pattern predpreverjanje je preskočeno, ker konfiguracija vsebuje FMP ali konkretne office izmene; "
+                        "FMP/Vi pravilo preveri CP-SAT."
+                    ),
                 }
             )
         else:
@@ -2136,6 +2162,13 @@ def manual_configuration_audit(
             "solver_status": None,
             "solver_upper_bound_sector_hours": None,
             "solver_gap_to_upper_bound": None,
+            "manual_similarity_percent": None,
+            "manual_similarity_sh_diff": None,
+            "manual_similarity_people_diff": None,
+            "manual_similarity_license_diff": None,
+            "manual_similarity_role_hours_diff": None,
+            "manual_similarity_sector_profile_diff": None,
+            "manual_similarity_workload_diff": None,
             "hourly_comparison": [],
             "message": None,
         }
@@ -2157,6 +2190,7 @@ def manual_configuration_audit(
             settings = settings_for_manual_schedule_evaluation(manual_schedule, time_limit_seconds)
             result = calculate(request_for_configuration(configuration, settings, manual_counts))
             model_vs_manual_diff = result.max_sector_hours - manual_sector_hours
+            similarity = _candidate_similarity_payload(result, manual_configuration_detail(str(column_index)))
             base_row.update(
                 {
                     "status": "covered" if result.missing_sector_hours == 0 else "shortfall",
@@ -2174,6 +2208,13 @@ def manual_configuration_audit(
                     "solver_status": result.solver_status,
                     "solver_upper_bound_sector_hours": result.solver_upper_bound_sector_hours,
                     "solver_gap_to_upper_bound": result.solver_gap_to_upper_bound,
+                    "manual_similarity_percent": similarity["similarity"],
+                    "manual_similarity_sh_diff": similarity["sh_diff"],
+                    "manual_similarity_people_diff": similarity["people_diff"],
+                    "manual_similarity_license_diff": similarity["license_diff"],
+                    "manual_similarity_role_hours_diff": similarity["role_hours_diff"],
+                    "manual_similarity_sector_profile_diff": similarity["sector_profile_diff"],
+                    "manual_similarity_workload_diff": similarity["workload_diff"],
                     "hourly_comparison": _hourly_comparison(manual_schedule, result, settings.max_sectors_per_hour),
                     "message": None if result.missing_sector_hours == 0 else f"Manjka {result.missing_sector_hours} SH.",
                 }

@@ -15,10 +15,12 @@ from .pattern_core import PATTERN_PROGRESS_PREFIX
 JobStatus = str
 
 JOB_TTL = timedelta(hours=4)
+WARM_START_SNAPSHOT_TTL = timedelta(hours=1)
 
 _executor = ThreadPoolExecutor(max_workers=1)
 _lock = Lock()
 _jobs: dict[str, CalculationJob] = {}
+_warm_start_snapshots: dict[str, WarmStartSnapshot] = {}
 
 
 class JobNotFoundError(KeyError):
@@ -26,8 +28,19 @@ class JobNotFoundError(KeyError):
 
 
 @dataclass
+class WarmStartSnapshot:
+    snapshot_id: str
+    source_job_id: str
+    payload: dict[str, object]
+    created_at: datetime
+    updated_at: datetime
+    consumer_job_id: str | None = None
+
+
+@dataclass
 class CalculationJob:
     job_id: str
+    kind: str
     status: JobStatus
     progress: int
     message: str
@@ -62,6 +75,8 @@ class CalculationJob:
     pattern_estimate_low_seconds: int | None = None
     pattern_estimate_high_seconds: int | None = None
     pattern_proven_minimum: bool | None = None
+    warm_start_snapshot_id: str | None = None
+    consumed_warm_start_snapshot_id: str | None = None
     error: str | None = None
     future: Future[None] | None = None
     cancel_requested: bool = False
@@ -95,6 +110,62 @@ def _best_pareto_point(result: ParetoResponse) -> ParetoPoint | None:
     )
 
 
+def _warm_start_payload_from_result(result: CalculatorResponse) -> dict[str, object]:
+    return {
+        "people": [person.model_dump(mode="json") for person in result.people],
+        "hourly_coverage": [hour.model_dump(mode="json") for hour in result.hourly_coverage],
+    }
+
+
+def _refresh_warm_start_snapshot_locked(job: CalculationJob, result: CalculatorResponse | ParetoResponse | None) -> None:
+    if not isinstance(result, CalculatorResponse):
+        return
+    if not result.people or not result.hourly_coverage:
+        return
+
+    snapshot_id = job.warm_start_snapshot_id or uuid4().hex
+    now = _now()
+    existing_snapshot = _warm_start_snapshots.get(snapshot_id)
+    job.warm_start_snapshot_id = snapshot_id
+    _warm_start_snapshots[snapshot_id] = WarmStartSnapshot(
+        snapshot_id=snapshot_id,
+        source_job_id=job.job_id,
+        payload=_warm_start_payload_from_result(result),
+        created_at=existing_snapshot.created_at if existing_snapshot is not None else now,
+        updated_at=now,
+        consumer_job_id=existing_snapshot.consumer_job_id if existing_snapshot is not None else None,
+    )
+
+
+def _delete_consumed_warm_start_snapshot_locked(job: CalculationJob) -> None:
+    snapshot_id = job.consumed_warm_start_snapshot_id
+    if snapshot_id is None:
+        return
+    snapshot = _warm_start_snapshots.get(snapshot_id)
+    if snapshot is not None and snapshot.consumer_job_id == job.job_id:
+        del _warm_start_snapshots[snapshot_id]
+    job.consumed_warm_start_snapshot_id = None
+
+
+def _consume_warm_start_snapshot_locked(job: CalculationJob, request: CalculatorRequest) -> CalculatorRequest:
+    snapshot_id = request.warm_start_snapshot_id
+    if not snapshot_id:
+        return request
+
+    snapshot = _warm_start_snapshots.get(snapshot_id)
+    if snapshot is None:
+        return request.model_copy(update={"warm_start_snapshot_id": None})
+
+    snapshot.consumer_job_id = job.job_id
+    job.consumed_warm_start_snapshot_id = snapshot_id
+    return request.model_copy(
+        update={
+            "warm_start": snapshot.payload,
+            "warm_start_snapshot_id": None,
+        }
+    )
+
+
 def _status_payload(job: CalculationJob) -> dict[str, object]:
     best_result = job.result
     if isinstance(best_result, CalculatorResponse):
@@ -119,6 +190,7 @@ def _status_payload(job: CalculationJob) -> dict[str, object]:
 
     return {
         "job_id": job.job_id,
+        "kind": job.kind,
         "status": job.status,
         "progress": job.progress,
         "message": job.message,
@@ -156,6 +228,7 @@ def _status_payload(job: CalculationJob) -> dict[str, object]:
         "pattern_estimate_low_seconds": job.pattern_estimate_low_seconds,
         "pattern_estimate_high_seconds": job.pattern_estimate_high_seconds,
         "pattern_proven_minimum": job.pattern_proven_minimum,
+        "warm_start_snapshot_id": job.warm_start_snapshot_id,
     }
 
 
@@ -169,12 +242,22 @@ def _cleanup_old_jobs_locked() -> None:
     for job_id in expired_job_ids:
         del _jobs[job_id]
 
+    snapshot_cutoff = _now() - WARM_START_SNAPSHOT_TTL
+    expired_snapshot_ids = [
+        snapshot_id
+        for snapshot_id, snapshot in _warm_start_snapshots.items()
+        if snapshot.consumer_job_id is None and snapshot.updated_at < snapshot_cutoff
+    ]
+    for snapshot_id in expired_snapshot_ids:
+        del _warm_start_snapshots[snapshot_id]
+
 
 def _mark_failed_locked(job: CalculationJob, message: str, error: str | None = None) -> None:
     job.status = "failed"
     job.message = message
     job.error = error or message
     job.finished_at = _now()
+    _delete_consumed_warm_start_snapshot_locked(job)
 
 
 def _store_solver_snapshot_locked(job: CalculationJob, solver_snapshot: SolverSnapshot | None) -> None:
@@ -237,6 +320,8 @@ def _finish_with_result_locked(job: CalculationJob, result: CalculatorResponse |
     job.message = message
     job.error = None
     _store_result_solver_fields_locked(job, result)
+    _refresh_warm_start_snapshot_locked(job, result)
+    _delete_consumed_warm_start_snapshot_locked(job)
 
 
 def _finish_with_best_result_locked(job: CalculationJob, message: str) -> None:
@@ -248,6 +333,8 @@ def _finish_with_best_result_locked(job: CalculationJob, message: str) -> None:
     job.finished_at = _now()
     job.message = _result_summary(job.result, message)
     job.error = None
+    _refresh_warm_start_snapshot_locked(job, job.result)
+    _delete_consumed_warm_start_snapshot_locked(job)
 
 
 def _parse_pattern_progress(message: str) -> tuple[str, dict[str, object] | None]:
@@ -433,6 +520,7 @@ def _update_incumbent(job_id: str, result: CalculatorResponse, solver_snapshot: 
         job.result_version += 1
         job.best_result_updated_at = _now()
         _store_solver_snapshot_locked(job, solver_snapshot)
+        _refresh_warm_start_snapshot_locked(job, result)
         job.status = "running"
         job.progress = max(job.progress, 90 if result.missing_sector_hours == 0 else 80)
         job.message = _result_summary(result, "Najboljša najdena rešitev")
@@ -658,6 +746,7 @@ def create_calculation_job(request: CalculatorRequest) -> dict[str, str]:
     job_id = uuid4().hex
     job = CalculationJob(
         job_id=job_id,
+        kind="calculation",
         status="queued",
         progress=0,
         message="Čaka v vrsti za izračun.",
@@ -666,6 +755,7 @@ def create_calculation_job(request: CalculatorRequest) -> dict[str, str]:
 
     with _lock:
         _cleanup_old_jobs_locked()
+        request = _consume_warm_start_snapshot_locked(job, request)
         _jobs[job_id] = job
 
     future = _executor.submit(_run_calculation_job, job_id, request)
@@ -681,6 +771,7 @@ def create_complete_configuration_job(request: CompleteConfigurationRequest) -> 
     job_id = uuid4().hex
     job = CalculationJob(
         job_id=job_id,
+        kind="complete",
         status="queued",
         progress=0,
         message="Čaka v vrsti za dopolnitev konfiguracije.",
@@ -689,6 +780,8 @@ def create_complete_configuration_job(request: CompleteConfigurationRequest) -> 
 
     with _lock:
         _cleanup_old_jobs_locked()
+        resolved_request = _consume_warm_start_snapshot_locked(job, request.request)
+        request = request.model_copy(update={"request": resolved_request})
         _jobs[job_id] = job
 
     future = _executor.submit(_run_complete_configuration_job, job_id, request)
@@ -708,6 +801,7 @@ def create_one_down_job(
     job_id = uuid4().hex
     job = CalculationJob(
         job_id=job_id,
+        kind="one_down",
         status="queued",
         progress=0,
         message="Čaka v vrsti za one-down preverjanje.",
@@ -731,6 +825,7 @@ def create_pareto_job(request: CalculatorRequest) -> dict[str, str]:
     job_id = uuid4().hex
     job = CalculationJob(
         job_id=job_id,
+        kind="pareto",
         status="queued",
         progress=0,
         message="Čaka v vrsti za Pareto analizo.",
@@ -739,6 +834,7 @@ def create_pareto_job(request: CalculatorRequest) -> dict[str, str]:
 
     with _lock:
         _cleanup_old_jobs_locked()
+        request = _consume_warm_start_snapshot_locked(job, request)
         _jobs[job_id] = job
 
     future = _executor.submit(_run_pareto_job, job_id, request)
@@ -748,6 +844,13 @@ def create_pareto_job(request: CalculatorRequest) -> dict[str, str]:
             current_job.future = future
 
     return {"job_id": job_id, "status": "queued"}
+
+
+def list_jobs() -> list[dict[str, object]]:
+    with _lock:
+        _cleanup_old_jobs_locked()
+        jobs = sorted(_jobs.values(), key=lambda item: item.created_at)
+        return [_status_payload(job) for job in jobs]
 
 
 def get_job_status(job_id: str) -> dict[str, object]:

@@ -4,7 +4,7 @@ import math
 import json
 import os
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Event, Thread
 from time import monotonic
@@ -24,6 +24,9 @@ from .models import (
 
 DAY_START = 7
 HOURS_IN_DAY = 24
+DEFAULT_FMP_SHIFT = "A9"
+FMP_AUTO_SHIFT_CODES = ("A7", "A8", "A9", "A10", "A11")
+FMP_LEADER_OVERLAP_PENALTY = 1_200_000
 LICENSES = ("FL", "APS", "ACS")
 SECTOR_DISPLAY_ORDER = ["ALL", "LOWER", "UPPER", "MID", "HIGH", "TOP"]
 SECTOR_PROFILES = {
@@ -69,6 +72,7 @@ class PatternLibrary:
     required_group_counts: dict[str, int]
     generated_at_seconds: float
     rule_signature: str
+    exact_group_counts: dict[str, int] = field(default_factory=dict)
     cache_status: str = "generated"
     cache_path: str | None = None
 
@@ -92,6 +96,17 @@ class PatternSolveResult:
     slot_assignment_counts: dict[int, dict[str, int]]
     objective_value: float | None = None
     best_objective_bound: float | None = None
+
+
+@dataclass(frozen=True)
+class PatternRequirement:
+    license: str
+    shift: str
+    role: str | None
+    required_count: int
+    max_work_hours: int | None
+    required_group: str | None = None
+    exact_count: int | None = None
 
 
 def can_use_pattern_minimum_core(request: CalculatorRequest) -> bool:
@@ -249,12 +264,22 @@ def slots_from_bits(shift: ShiftRule, bits: tuple[int, ...]) -> tuple[int, ...]:
     )
 
 
-def _role_requirements(request: CalculatorRequest) -> list[tuple[str, str, str | None, int, int | None]]:
-    requirements: list[tuple[str, str, str | None, int, int | None]] = []
+def fmp_shift_candidates(request: CalculatorRequest) -> list[str]:
+    if not request.include_fmp:
+        return []
+    active_shift_codes = {shift.code for shift in enabled_shift_rules(request.settings.shifts)}
+    if request.fmp_shift_mode == "fixed":
+        fmp_shift = (request.fmp_shift or DEFAULT_FMP_SHIFT).strip() or DEFAULT_FMP_SHIFT
+        return [fmp_shift] if fmp_shift in active_shift_codes else []
+    return [shift_code for shift_code in FMP_AUTO_SHIFT_CODES if shift_code in active_shift_codes]
+
+
+def _role_requirements(request: CalculatorRequest) -> list[PatternRequirement]:
+    requirements: list[PatternRequirement] = []
     if request.settings.include_required_shift_leaders:
-        requirements.append(("FL", "A7", "V1", 1, request.settings.v1_sector_limit))
-        requirements.append(("FL", "A14", "V2", 1, request.settings.v2_sector_limit))
-        requirements.append(("FL", "V3", "V3", 1, request.settings.v3_sector_limit))
+        requirements.append(PatternRequirement("FL", "A7", "V1", 1, request.settings.v1_sector_limit))
+        requirements.append(PatternRequirement("FL", "A14", "V2", 1, request.settings.v2_sector_limit))
+        requirements.append(PatternRequirement("FL", "V3", "V3", 1, request.settings.v3_sector_limit))
 
     night_without_v3 = (
         max(
@@ -266,14 +291,41 @@ def _role_requirements(request: CalculatorRequest) -> list[tuple[str, str, str |
         else 0
     )
     if night_without_v3 > 0:
-        requirements.append(("FL", "A21", None, night_without_v3, None))
+        requirements.append(PatternRequirement("FL", "A21", None, night_without_v3, None))
 
     if request.include_fmp:
-        requirements.append(("FL", "A9", "FMP", 1, request.settings.fmp_sector_limit))
+        candidate_shifts = fmp_shift_candidates(request)
+        if request.fmp_shift_mode == "auto":
+            required_group = "FL:FMP:auto"
+            for index, fmp_shift in enumerate(candidate_shifts):
+                requirements.append(
+                    PatternRequirement(
+                        "FL",
+                        fmp_shift,
+                        "FMP",
+                        1 if index == 0 else 0,
+                        request.settings.fmp_sector_limit,
+                        required_group=required_group,
+                        exact_count=1 if index == 0 else None,
+                    )
+                )
+        elif candidate_shifts:
+            fmp_shift = candidate_shifts[0]
+            requirements.append(
+                PatternRequirement(
+                    "FL",
+                    fmp_shift,
+                    "FMP",
+                    1,
+                    request.settings.fmp_sector_limit,
+                    exact_count=1,
+                )
+            )
     return requirements
 
 
 def pattern_rule_signature(request: CalculatorRequest) -> str:
+    fmp_candidates = ",".join(fmp_shift_candidates(request)) or "-"
     shift_signature = ",".join(
         f"{shift.code}:{shift.start_hour}:{shift.duration_hours}:{int(shift.enabled)}"
         for shift in request.settings.shifts
@@ -285,11 +337,15 @@ def pattern_rule_signature(request: CalculatorRequest) -> str:
         f"_nightEnabled{int(request.settings.include_night_fl_requirement)}"
         f"_leaders{int(request.settings.include_required_shift_leaders)}"
         f"_fmp{int(request.include_fmp)}"
+        f"_fmpMode{request.fmp_shift_mode}"
+        f"_fmpShift{(request.fmp_shift or DEFAULT_FMP_SHIFT).strip() or DEFAULT_FMP_SHIFT}"
+        f"_fmpCandidates{fmp_candidates}"
         f"_v1{request.settings.v1_sector_limit}"
         f"_v2{request.settings.v2_sector_limit}"
         f"_v3{request.settings.v3_sector_limit}"
         f"_fmplimit{request.settings.fmp_sector_limit}"
         "_leaderEdgeRules1"
+        "_exactCover1"
         f"_{shift_signature}"
     )
 
@@ -327,10 +383,11 @@ def _pattern_from_dict(data: dict[str, object]) -> WorkPattern:
 
 def _library_to_dict(library: PatternLibrary) -> dict[str, object]:
     return {
-        "version": 1,
+        "version": 2,
         "rule_signature": library.rule_signature,
         "generated_at_seconds": library.generated_at_seconds,
         "required_group_counts": library.required_group_counts,
+        "exact_group_counts": library.exact_group_counts,
         "patterns": [_pattern_to_dict(pattern) for pattern in library.patterns],
     }
 
@@ -340,6 +397,10 @@ def _library_from_dict(data: dict[str, object], cache_path: Path) -> PatternLibr
         str(key): int(value)
         for key, value in dict(data.get("required_group_counts", {})).items()
     }
+    exact_group_counts = {
+        str(key): int(value)
+        for key, value in dict(data.get("exact_group_counts", {})).items()
+    }
     return PatternLibrary(
         patterns=[
             _pattern_from_dict(item)
@@ -347,6 +408,7 @@ def _library_from_dict(data: dict[str, object], cache_path: Path) -> PatternLibr
             if isinstance(item, dict)
         ],
         required_group_counts=required_group_counts,
+        exact_group_counts=exact_group_counts,
         generated_at_seconds=float(data.get("generated_at_seconds", 0.0)),
         rule_signature=str(data["rule_signature"]),
         cache_status="hit",
@@ -383,6 +445,7 @@ def build_pattern_library(request: CalculatorRequest) -> PatternLibrary:
 
     patterns: list[WorkPattern] = []
     required_group_counts: dict[str, int] = {}
+    exact_group_counts: dict[str, int] = {}
 
     def add_pattern_set(
         license_name: str,
@@ -419,24 +482,28 @@ def build_pattern_library(request: CalculatorRequest) -> PatternLibrary:
         for license_name in LICENSES:
             add_pattern_set(license_name, shift, None)
 
-    for license_name, shift_code, role, count, max_work_hours in _role_requirements(request):
-        shift = shifts.get(shift_code)
+    for requirement in _role_requirements(request):
+        shift = shifts.get(requirement.shift)
         if shift is None:
             continue
-        required_group = f"{license_name}:{shift_code}:{role or '-'}"
-        required_group_counts[required_group] = required_group_counts.get(required_group, 0) + count
+        required_group = requirement.required_group or f"{requirement.license}:{requirement.shift}:{requirement.role or '-'}"
+        if requirement.required_count > 0:
+            required_group_counts[required_group] = required_group_counts.get(required_group, 0) + requirement.required_count
+        if requirement.exact_count is not None:
+            exact_group_counts[required_group] = requirement.exact_count
         add_pattern_set(
-            license_name,
+            requirement.license,
             shift,
-            role,
+            requirement.role,
             required_group=required_group,
-            max_work_hours=max_work_hours,
-            include_zero=max_work_hours == 0,
+            max_work_hours=requirement.max_work_hours,
+            include_zero=True,
         )
 
     return PatternLibrary(
         patterns=patterns,
         required_group_counts=required_group_counts,
+        exact_group_counts=exact_group_counts,
         generated_at_seconds=round(monotonic() - started_at, 3),
         rule_signature=pattern_rule_signature(request),
         cache_status="generated",
@@ -455,6 +522,7 @@ def load_or_build_pattern_library(request: CalculatorRequest) -> PatternLibrary:
     return PatternLibrary(
         patterns=library.patterns,
         required_group_counts=library.required_group_counts,
+        exact_group_counts=library.exact_group_counts,
         generated_at_seconds=library.generated_at_seconds,
         rule_signature=library.rule_signature,
         cache_status="generated",
@@ -470,6 +538,7 @@ def pattern_library_profile(request: CalculatorRequest, *, regenerate: bool = Fa
         library = PatternLibrary(
             patterns=library.patterns,
             required_group_counts=library.required_group_counts,
+            exact_group_counts=library.exact_group_counts,
             generated_at_seconds=library.generated_at_seconds,
             rule_signature=library.rule_signature,
             cache_status="regenerated",
@@ -488,6 +557,7 @@ def pattern_library_profile(request: CalculatorRequest, *, regenerate: bool = Fa
         "cache_path": library.cache_path,
         "generated_at_seconds": library.generated_at_seconds,
         "required_group_counts": library.required_group_counts,
+        "exact_group_counts": library.exact_group_counts,
         "patterns_by_shift": dict(sorted(by_shift.items())),
         "patterns_by_license": {license_name: by_license[license_name] for license_name in LICENSES},
         "patterns_by_role": dict(sorted(by_role.items())),
@@ -523,6 +593,10 @@ def _license_ratio_targets(request: CalculatorRequest) -> dict[str, int]:
     if sum(ratio.values()) <= 0:
         return {"FL": 1, "APS": 0, "ACS": 1}
     return ratio
+
+
+def _is_vi_role(role: str | None) -> bool:
+    return (role or "").upper() in {"V1", "V2", "V3"}
 
 
 def _minimum_people_lower_bound(
@@ -566,9 +640,19 @@ def _solve_pattern_model(
             )
             >= required_count
         )
+    for exact_group, exact_count in library.exact_group_counts.items():
+        model.Add(
+            sum(
+                counts[index]
+                for index, pattern in enumerate(library.patterns)
+                if pattern.required_group == exact_group
+            )
+            == exact_count
+        )
 
     slot_assignment_vars: dict[int, dict[str, cp_model.IntVar | int]] = {}
     flexible_fl_terms: list[cp_model.LinearExpr] = []
+    fmp_vi_overlap_terms: list[cp_model.LinearExpr] = []
     for slot, sector_count in enumerate(target_sector_counts):
         requirements = sector_seat_requirements(sector_count)
         available = {
@@ -597,9 +681,9 @@ def _solve_pattern_model(
             acs_above = 0
             fl_above = 0
 
-        model.Add(all_fl + fl_lower + fl_above <= available["FL"])
-        model.Add(aps_lower <= available["APS"])
-        model.Add(acs_above <= available["ACS"])
+        model.Add(all_fl + fl_lower + fl_above == available["FL"])
+        model.Add(aps_lower == available["APS"])
+        model.Add(acs_above == available["ACS"])
         slot_assignment_vars[slot] = {
             "all_fl": all_fl,
             "aps_lower": aps_lower,
@@ -608,6 +692,25 @@ def _solve_pattern_model(
             "fl_above": fl_above,
         }
         flexible_fl_terms.extend([fl_lower, fl_above])
+
+        fmp_slot_pattern_indexes = [
+            index
+            for index, pattern in enumerate(library.patterns)
+            if pattern.role == "FMP" and slot in pattern.slots
+        ]
+        vi_slot_pattern_indexes = [
+            index
+            for index, pattern in enumerate(library.patterns)
+            if _is_vi_role(pattern.role) and slot in pattern.slots
+        ]
+        if fmp_slot_pattern_indexes and vi_slot_pattern_indexes:
+            fmp_on_slot = sum(counts[index] for index in fmp_slot_pattern_indexes)
+            vi_on_slot = sum(counts[index] for index in vi_slot_pattern_indexes)
+            overlap_count = model.NewIntVar(0, people_limit, f"fmp_vi_overlap_{slot}")
+            model.Add(overlap_count <= vi_on_slot)
+            model.Add(overlap_count <= people_limit * fmp_on_slot)
+            model.Add(overlap_count >= vi_on_slot - people_limit * (1 - fmp_on_slot))
+            fmp_vi_overlap_terms.append(FMP_LEADER_OVERLAP_PENALTY * overlap_count)
 
     if optimize_quality:
         ratio_targets = _license_ratio_targets(request)
@@ -636,6 +739,7 @@ def _solve_pattern_model(
         model.Minimize(
             sum(deviation_terms) * 10_000
             + sum(flexible_fl_terms) * (750 if request.prefer_minimal_fl else 80)
+            + sum(fmp_vi_overlap_terms)
             + selected_fl * (250 if request.prefer_minimal_fl else 5)
             + selected_capacity * 2
             + sum(role_terms) * 20
@@ -742,7 +846,7 @@ def _take_workers(
     candidates.sort(key=lambda person: (person.sector_hours, person.role is not None, person.shift, person.id))
     chosen = candidates[:count]
     if len(chosen) < count:
-        raise RuntimeError("Agregirana rešitev ni uspela sestaviti urnega prikaza.")
+        raise RuntimeError("Exact-cover rešitev ni uspela sestaviti urnega prikaza.")
     for person in chosen:
         used_this_slot.add(person.id)
         person.sector_hours += 1
@@ -777,13 +881,13 @@ def _build_hourly_coverage(
                 *_take_workers(people, slot, fallback_license, fallback_count, used_this_slot),
             ]
             if len(workers) != 2:
-                raise RuntimeError("Agregirana rešitev ni uspela sestaviti para za sektor.")
+                raise RuntimeError("Exact-cover rešitev ni uspela sestaviti para za sektor.")
             return workers[0].id, workers[1].id
 
         for sector_name in sector_names_for_count(sector_count):
             if sector_name == "ALL":
                 if all_fl < 2:
-                    raise RuntimeError("ALL sektor nima dveh FL v agregirani rešitvi.")
+                    raise RuntimeError("ALL sektor nima dveh FL v exact-cover rešitvi.")
                 lower_worker, upper_worker = worker_pair("FL")
                 all_fl -= 2
             elif sector_name == "LOWER":
@@ -878,7 +982,7 @@ def _response_from_pattern_solution(
     failed_steps = [step for step in search_steps if step.status == "INFEASIBLE"]
     notes.extend(
         [
-            "Uporabljeno je eksperimentalno agregirano jedro: najprej šteje legalne work/rest vzorce po izmeni in licenci, šele nato izdela urni prikaz oseb.",
+            "Uporabljeno je eksperimentalno exact-cover jedro: izbrani legalni work/rest vzorci pomenijo dejanske sektorske ure, ne samo razpoložljivosti.",
             (
                 f"Generator je uporabil {library.pattern_count} legalnih vzorcev "
                 f"({ 'cache' if library.cache_status == 'hit' else 'na novo generirano' })."
@@ -903,7 +1007,7 @@ def _response_from_pattern_solution(
         solver_optimality_gap_percent=None,
         missing_sector_hours=0,
         baseline_min_people=len(people),
-        baseline_min_people_formula="Agregirani pattern model je preverjal limite ljudi po vrsti in dokazoval neizvedljivost manjših limitov.",
+        baseline_min_people_formula="Exact-cover pattern model je preverjal limite ljudi po vrsti in dokazoval neizvedljivost manjših limitov.",
         minimum_required_fl=sum(1 for person in people if person.license == "FL"),
         planned_people=len(people),
         active_people=len(people) - unused_people,
@@ -1050,7 +1154,7 @@ def calculate_pattern_minimum(
         break
 
     if feasible_result is None or feasible_people_limit is None:
-        warnings.append(f"Agregirani model ni našel izvedljive rešitve do {upper_bound} ljudi.")
+        warnings.append(f"Exact-cover pattern model ni našel izvedljive rešitve do {upper_bound} ljudi.")
         return CalculatorResponse(
             feasible=False,
             max_sector_hours=0,
@@ -1072,7 +1176,7 @@ def calculate_pattern_minimum(
                 for slot in range(HOURS_IN_DAY)
             ],
             notes=[
-                "Eksperimentalni agregirani model je dokazal neizvedljivost vseh preverjenih limitov.",
+                "Eksperimentalni exact-cover model je dokazal neizvedljivost vseh preverjenih limitov.",
                 f"Preverjeni limiti: {lower_bound}-{upper_bound}.",
             ],
             warnings=warnings,
@@ -1099,7 +1203,7 @@ def calculate_pattern_minimum(
         progress_callback,
         92,
         "assignment",
-        "Iz agregirane rešitve sestavljam imena oseb in urni prikaz sektorjev.",
+        "Iz exact-cover rešitve sestavljam imena oseb in urni prikaz sektorjev.",
         people_limit=feasible_people_limit,
     )
     proven_minimum = all(step.status == "INFEASIBLE" for step in search_steps[:-1])

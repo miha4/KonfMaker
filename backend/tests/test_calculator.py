@@ -2,6 +2,7 @@ import time
 import zipfile
 from types import SimpleNamespace
 
+import app.calculator as calculator_module
 from fastapi.testclient import TestClient
 
 from app.calculator import (
@@ -12,17 +13,37 @@ from app.calculator import (
     add_locked_staff_people,
     calculate,
     calculate_pareto,
+    can_work_slot,
     candidate_pool_from_configuration,
     configuration_seed_candidate_pools,
     coverage_shortfall_warning,
     hour_index,
     PersonState,
     role_allows_sector_slot,
+    role_edge_exception_penalty,
     shift_map_for_request,
+    solve_schedule_with_cp_sat,
 )
 from app.config_library import complete_configuration, manual_configuration_one_down, settings_for_manual_schedule_evaluation
+from app.jobs import (
+    CalculationJob,
+    _consume_warm_start_snapshot_locked,
+    _delete_consumed_warm_start_snapshot_locked,
+    _now,
+    _refresh_warm_start_snapshot_locked,
+    _warm_start_snapshots,
+)
 from app.main import app
-from app.models import CalculatorRequest, CalculatorResponse, CalculatorSettings, CompleteConfigurationRequest
+from app.models import (
+    CalculatorRequest,
+    CalculatorResponse,
+    CalculatorSettings,
+    CompleteConfigurationRequest,
+    HourlyCoverage,
+    SectorAssignment,
+    VirtualPerson,
+)
+from app.pattern_core import build_pattern_library
 
 
 def write_minimal_config_workbook(path, sheet_name="25n5"):
@@ -122,6 +143,8 @@ def make_request(
     license_mix_percent=None,
     include_pareto=False,
     prefer_minimal_fl=False,
+    fmp_shift_mode="fixed",
+    fmp_shift="A9",
 ):
     return CalculatorRequest(
         calculation_mode=calculation_mode,
@@ -130,6 +153,8 @@ def make_request(
         aps_count=aps,
         acs_count=acs,
         include_fmp=fmp,
+        fmp_shift_mode=fmp_shift_mode,
+        fmp_shift=fmp_shift,
         settings=CalculatorSettings(
             max_sectors_per_hour=5,
             max_consecutive_work_hours=2,
@@ -159,6 +184,83 @@ def make_request(
     )
 
 
+def minimal_warm_start_result() -> CalculatorResponse:
+    person = VirtualPerson(
+        id="A",
+        license="FL",
+        shift="A7",
+        role=None,
+        sector_hours=1,
+        max_sector_hours=5,
+        utilization_percent=20,
+        used_as_sector_controller=True,
+    )
+    return CalculatorResponse(
+        feasible=True,
+        max_sector_hours=1,
+        requested_sector_hours=1,
+        minimum_required_fl=1,
+        planned_people=1,
+        active_people=1,
+        unused_people=0,
+        scheduled_person_hours=2,
+        total_person_capacity_hours=10,
+        utilization_percent=20,
+        people=[person],
+        shift_summary=[],
+        hourly_coverage=[
+            HourlyCoverage(
+                hour="07:00-08:00",
+                open_sectors=1,
+                workers=["A"],
+                sector_workers=[
+                    SectorAssignment(sector_name="ALL", lower_worker="A", upper_worker="A"),
+                ],
+            )
+        ],
+        notes=[],
+        warnings=[],
+    )
+
+
+def test_temp_warm_start_snapshot_is_consumed_once_and_deleted():
+    _warm_start_snapshots.clear()
+    source_job = CalculationJob(
+        job_id="source",
+        kind="calculation",
+        status="finished",
+        progress=100,
+        message="source",
+        created_at=_now(),
+    )
+    _refresh_warm_start_snapshot_locked(source_job, minimal_warm_start_result())
+
+    snapshot_id = source_job.warm_start_snapshot_id
+    assert snapshot_id is not None
+    assert snapshot_id in _warm_start_snapshots
+
+    consumer_job = CalculationJob(
+        job_id="consumer",
+        kind="calculation",
+        status="queued",
+        progress=0,
+        message="consumer",
+        created_at=_now(),
+    )
+    request = make_request().model_copy(update={"warm_start_snapshot_id": snapshot_id})
+    resolved_request = _consume_warm_start_snapshot_locked(consumer_job, request)
+
+    assert resolved_request.warm_start_snapshot_id is None
+    assert resolved_request.warm_start is not None
+    assert resolved_request.warm_start["people"][0]["id"] == "A"
+    assert consumer_job.consumed_warm_start_snapshot_id == snapshot_id
+
+    _delete_consumed_warm_start_snapshot_locked(consumer_job)
+
+    assert snapshot_id not in _warm_start_snapshots
+    assert consumer_job.consumed_warm_start_snapshot_id is None
+
+
 def test_calculator_requires_minimum_fl():
     result = calculate(make_request(total=28, fl=5, acs=23, fmp=True))
     assert result.feasible is False
@@ -166,7 +268,7 @@ def test_calculator_requires_minimum_fl():
 
 
 def test_calculator_returns_generated_people_and_hours():
-    result = calculate(make_request())
+    result = calculate(make_request(cp_sat_time_limit_seconds=8))
     assert result.max_sector_hours > 0
     assert 0 < len(result.people) <= 28
     assert sum(item.total for item in result.shift_summary) == len(result.people)
@@ -180,7 +282,7 @@ def test_calculator_returns_generated_people_and_hours():
 
 def test_api_calculate_sector_hours():
     client = TestClient(app)
-    response = client.post("/api/calculate-sector-hours", json=make_request().model_dump())
+    response = client.post("/api/calculate-sector-hours", json=make_request(cp_sat_time_limit_seconds=8).model_dump())
     assert response.status_code == 200
     data = response.json()
     assert data["minimum_required_fl"] == 7
@@ -605,6 +707,10 @@ def test_manual_configuration_focus_audit_endpoint(monkeypatch, tmp_path):
     assert row["model_sector_hours"] == 2
     assert row["model_missing_sector_hours"] == 0
     assert row["status"] == "covered"
+    assert isinstance(row["manual_similarity_percent"], int)
+    assert row["manual_similarity_percent"] >= 0
+    assert "FL" in row["manual_similarity_license_diff"]
+    assert "V1" in row["manual_similarity_role_hours_diff"]
     first_hour = row["hourly_comparison"][0]
     assert first_hour["manual"] == 2
     assert first_hour["model"] == 2
@@ -947,6 +1053,142 @@ def test_required_role_sector_limits_are_respected():
         assert role_people[role].max_sector_hours <= limit
 
 
+def test_fmp_fixed_shift_is_used_for_mandatory_fmp():
+    result = calculate(
+        make_request(
+            total=1,
+            fl=1,
+            aps=0,
+            acs=0,
+            requested_sector_counts=[0] * 24,
+            include_required_shift_leaders=False,
+            include_night_fl_requirement=False,
+            fmp_shift_mode="fixed",
+            fmp_shift="A7",
+        )
+    )
+
+    fmp_person = next(person for person in result.people if person.role == "FMP")
+    assert fmp_person.shift == "A7"
+
+
+def test_auto_fmp_is_chosen_inside_single_cp_sat_model():
+    request = make_request(
+        total=1,
+        fl=1,
+        aps=0,
+        acs=0,
+        fmp=True,
+        fmp_shift_mode="auto",
+        requested_sector_counts=[0] * 24,
+        include_required_shift_leaders=False,
+        include_night_fl_requirement=False,
+        cp_sat_time_limit_seconds=3,
+    )
+
+    seed_people, _next_id, _notes, _warnings = calculator_module.create_mandatory_people(request)
+    auto_indexes = calculator_module.auto_fmp_candidate_indexes(seed_people, request)
+
+    assert len(auto_indexes) == 5
+    assert calculator_module.required_indexes_for_seed_people(seed_people, request).isdisjoint(auto_indexes)
+    assert calculator_module.reserved_license_counts(seed_people, request)["FL"] == 1
+
+    result = calculate(request)
+    fmp_people = [person for person in result.people if person.role == "FMP"]
+
+    assert len(fmp_people) == 1
+    assert fmp_people[0].shift in {"A7", "A8", "A9", "A10", "A11"}
+    assert result.minimum_required_fl == 1
+    assert result.planned_people == 1
+
+
+def test_pattern_library_auto_fmp_expands_all_candidate_shift_patterns():
+    request = make_request(
+        total=0,
+        fl=0,
+        aps=0,
+        acs=0,
+        fmp=True,
+        fmp_shift_mode="auto",
+        fmp_sector_limit=2,
+        requested_sector_counts=[0] * 24,
+        calculation_mode="demand_to_staff",
+        include_required_shift_leaders=False,
+        include_night_fl_requirement=False,
+    )
+
+    library = build_pattern_library(request)
+    fmp_patterns = [pattern for pattern in library.patterns if pattern.role == "FMP"]
+
+    assert {pattern.shift for pattern in fmp_patterns} == {"A7", "A8", "A9", "A10", "A11"}
+    assert fmp_patterns
+    assert all(pattern.work_hours <= 2 for pattern in fmp_patterns)
+    assert library.required_group_counts["FL:FMP:auto"] == 1
+    assert library.exact_group_counts["FL:FMP:auto"] == 1
+    assert {pattern.required_group for pattern in fmp_patterns} == {"FL:FMP:auto"}
+
+
+def test_minimum_pattern_core_can_use_auto_fmp_without_shift_leaders():
+    requested = [0] * 24
+    requested[1] = 1
+
+    result = calculate(
+        make_request(
+            total=0,
+            fl=0,
+            aps=0,
+            acs=0,
+            fmp=True,
+            fmp_shift_mode="auto",
+            requested_sector_counts=requested,
+            calculation_mode="demand_to_staff",
+            include_required_shift_leaders=False,
+            include_night_fl_requirement=False,
+            cp_sat_time_limit_seconds=3,
+        )
+    )
+
+    fmp_people = [person for person in result.people if person.role == "FMP"]
+
+    assert result.feasible is True
+    assert result.max_sector_hours == 1
+    assert result.planned_people == 2
+    assert len(fmp_people) == 1
+    assert fmp_people[0].source == "pattern-core"
+    assert fmp_people[0].shift in {"A7", "A8", "A9", "A10", "A11"}
+
+
+def test_fmp_and_vi_overlap_is_soft_penalty_not_hard_block():
+    request = make_request(
+        total=2,
+        fl=2,
+        aps=0,
+        acs=0,
+        fmp=False,
+        requested_sector_counts=[1] + [0] * 23,
+        include_required_shift_leaders=False,
+        include_night_fl_requirement=False,
+    )
+    shift_map = shift_map_for_request(request)
+    candidates = [
+        PersonState(id="Vi1", license="FL", shift="A7", role="V1"),
+        PersonState(id="FMP", license="FL", shift="A7", role="FMP"),
+    ]
+
+    solved = solve_schedule_with_cp_sat(
+        candidates,
+        {0, 1},
+        request,
+        shift_map,
+        [1] + [0] * 23,
+        selected_total_cap=2,
+    )
+
+    assert solved is not None
+    scheduled, _snapshot = solved
+    assert scheduled.total_hours == 1
+
+
 def test_manual_schedule_role_limits_do_not_lower_defaults():
     settings = settings_for_manual_schedule_evaluation(
         {
@@ -1062,14 +1304,24 @@ def test_shift_leaders_are_not_scheduled_on_forbidden_edge_hours():
             assert slot not in forbidden_by_role.get(role, set())
 
 
-def test_v2_can_work_penultimate_shift_hour():
+def test_v2_edge_hours_are_penalized_and_penultimate_shift_hour_is_normal():
     request = make_request()
     shift_map = shift_map_for_request(request)
     person = PersonState(id="B", license="FL", shift="A14", role="V2")
 
-    assert role_allows_sector_slot(person, hour_index(14), shift_map) is False
+    assert role_allows_sector_slot(person, hour_index(14), shift_map) is True
+    assert role_edge_exception_penalty(person, hour_index(14), shift_map) > 0
     assert role_allows_sector_slot(person, hour_index(19), shift_map) is True
-    assert role_allows_sector_slot(person, hour_index(20), shift_map) is False
+    assert role_edge_exception_penalty(person, hour_index(19), shift_map) == 0
+    assert role_allows_sector_slot(person, hour_index(20), shift_map) is True
+    assert role_edge_exception_penalty(person, hour_index(20), shift_map) > 0
+
+
+def test_two_one_two_rule_wraps_across_day_start():
+    worked = [hour_index(6), hour_index(7)]
+
+    assert can_work_slot(worked, hour_index(8), max_consecutive=2, rest_after_max=1) is False
+    assert can_work_slot(worked, hour_index(9), max_consecutive=2, rest_after_max=1) is True
 
 
 def test_consecutive_hour_pair_swaps_controller_and_assistant_seats():
@@ -1232,7 +1484,7 @@ def test_requested_sector_counts_limit_open_sectors_by_hour():
 
 
 def test_generator_uses_cp_sat_scheduler():
-    result = calculate(make_request())
+    result = calculate(make_request(cp_sat_time_limit_seconds=8))
 
     assert result.max_sector_hours > 0
     assert any("CP-SAT" in note for note in result.notes)

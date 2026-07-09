@@ -63,6 +63,8 @@ export interface CalculatorRequest {
   aps_count: number;
   acs_count: number;
   include_fmp: boolean;
+  fmp_shift_mode: 'auto' | 'fixed';
+  fmp_shift: string;
   settings: CalculatorSettings;
   requested_sector_counts: number[];
   fixed_staff: FixedStaffRule[];
@@ -74,6 +76,11 @@ export interface CalculatorRequest {
   prefer_minimal_fl: boolean;
   office_fallback_mode: 'auto' | 'disabled' | 'force';
   preferred_manual_configuration_id?: string | null;
+  warm_start?: {
+    people: VirtualPerson[];
+    hourly_coverage: HourlyCoverage[];
+  } | null;
+  warm_start_snapshot_id?: string | null;
 }
 
 export interface VirtualPerson {
@@ -421,6 +428,13 @@ export interface ManualConfigurationAuditRow {
   solver_status?: string | null;
   solver_upper_bound_sector_hours?: number | null;
   solver_gap_to_upper_bound?: number | null;
+  manual_similarity_percent?: number | null;
+  manual_similarity_sh_diff?: number | null;
+  manual_similarity_people_diff?: number | null;
+  manual_similarity_license_diff?: Record<'FL' | 'APS' | 'ACS', number> | null;
+  manual_similarity_role_hours_diff?: Record<'V1' | 'V2' | 'V3' | 'FMP', number> | null;
+  manual_similarity_sector_profile_diff?: number | null;
+  manual_similarity_workload_diff?: number | null;
   hourly_comparison?: ManualConfigurationAuditHour[];
   message?: string | null;
   elapsed_seconds?: number | null;
@@ -444,12 +458,14 @@ export interface ManualAuditSummary {
   total_missing_sector_hours: number;
   sector_mismatch_hours: number;
   sector_distance: number;
+  average_manual_similarity_percent?: number | null;
   per_configuration?: Array<{
     name: string;
     status: string;
     manual_sector_hours: number;
     model_sector_hours: number;
     missing_sector_hours: number;
+    manual_similarity_percent?: number | null;
     coverage_percent?: number | null;
     solver_status?: string | null;
   }>;
@@ -505,6 +521,7 @@ export interface ManualFocusCalibration {
 }
 
 export type CalculationJobState = 'queued' | 'running' | 'finished' | 'failed';
+export type CalculationJobKind = 'calculation' | 'complete' | 'one_down' | 'pareto' | string;
 
 export interface CalculationJobStart {
   job_id: string;
@@ -513,6 +530,7 @@ export interface CalculationJobStart {
 
 export interface CalculationJobStatus {
   job_id: string;
+  kind: CalculationJobKind;
   status: CalculationJobState;
   progress: number;
   message: string;
@@ -554,4 +572,5 @@ export interface CalculationJobStatus {
   pattern_estimate_low_seconds: number | null;
   pattern_estimate_high_seconds: number | null;
   pattern_proven_minimum: boolean | null;
+  warm_start_snapshot_id: string | null;
 }

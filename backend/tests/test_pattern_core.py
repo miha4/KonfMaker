@@ -102,7 +102,10 @@ def test_pattern_core_proves_two_people_for_single_all_sector_hour():
     assert result.max_sector_hours == 1
     assert result.hourly_coverage[2].open_sectors == 1
     assert len(result.hourly_coverage[2].workers) == 2
+    assert result.scheduled_person_hours == 2
+    assert result.total_person_capacity_hours == 2
     assert any("Minimum je dokazan" in note for note in result.notes)
+    assert any("exact-cover" in note for note in result.notes)
 
 
 def test_pattern_core_uses_acs_for_upper_sector_when_ratio_allows_it():
@@ -116,6 +119,39 @@ def test_pattern_core_uses_acs_for_upper_sector_when_ratio_allows_it():
     assert result.feasible is True
     assert result.planned_people == 4
     assert {"FL", "ACS"}.issubset(selected_licenses)
+
+
+def test_pattern_core_supports_fmp_and_shift_leaders_without_same_hour_overlap():
+    requested = [0] * 24
+    requested[3] = 1
+    requested[4] = 1
+    request = make_pattern_request(requested, fl_ratio=80, aps_ratio=0, acs_ratio=0)
+    request = request.model_copy(
+        update={
+            "include_fmp": True,
+            "fmp_shift_mode": "auto",
+            "settings": request.settings.model_copy(
+                update={
+                    "include_required_shift_leaders": True,
+                    "v1_sector_limit": 1,
+                    "v2_sector_limit": 1,
+                    "v3_sector_limit": 4,
+                    "fmp_sector_limit": 6,
+                }
+            ),
+        }
+    )
+
+    assert can_use_pattern_minimum_core(request)
+    result = calculate_pattern_minimum(request)
+    role_by_id = {person.id: person.role for person in result.people}
+
+    assert result.feasible is True
+    assert any(person.role == "FMP" for person in result.people)
+    assert any(person.role in {"V1", "V2", "V3"} for person in result.people)
+    for coverage in result.hourly_coverage:
+        roles = {role_by_id.get(worker_id) for worker_id in coverage.workers}
+        assert not ("FMP" in roles and roles.intersection({"V1", "V2", "V3"}))
 
 
 def test_pattern_library_is_cached_by_rule_signature(monkeypatch, tmp_path):

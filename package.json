@@ -27,6 +27,9 @@
       "output": "release"
     },
     "files": [
+      "build/icon.png",
+      "build/icon.ico",
+      "build/icon.icns",
       "electron/**/*",
       "frontend/dist/**/*",
       "package.json"
@@ -54,12 +57,14 @@
     ],
     "mac": {
       "category": "public.app-category.productivity",
+      "icon": "build/icon.icns",
       "target": [
         "dmg",
         "zip"
       ]
     },
     "win": {
+      "icon": "build/icon.ico",
       "target": [
         "nsis",
         "zip"

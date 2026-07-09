@@ -309,6 +309,8 @@ def summarize_manual_audit(audit: dict[str, object]) -> dict[str, object]:
     total_missing_sector_hours = 0
     sector_mismatch_hours = 0
     sector_distance = 0
+    similarity_sum = 0
+    similarity_count = 0
     per_configuration: list[dict[str, object]] = []
 
     for row in rows:
@@ -321,6 +323,10 @@ def summarize_manual_audit(audit: dict[str, object]) -> dict[str, object]:
         total_manual_sector_hours += manual_sector_hours
         total_model_sector_hours += model_sector_hours
         total_missing_sector_hours += missing_sector_hours
+        similarity = row.get("manual_similarity_percent")
+        if isinstance(similarity, (int, float)):
+            similarity_sum += int(similarity)
+            similarity_count += 1
 
         row_mismatch_hours = 0
         row_sector_distance = 0
@@ -348,6 +354,7 @@ def summarize_manual_audit(audit: dict[str, object]) -> dict[str, object]:
                 "missing_sector_hours": missing_sector_hours,
                 "sector_mismatch_hours": row_mismatch_hours,
                 "sector_distance": row_sector_distance,
+                "manual_similarity_percent": similarity if isinstance(similarity, (int, float)) else None,
                 "solver_status": row.get("solver_status"),
                 "elapsed_seconds": row.get("elapsed_seconds"),
             }
@@ -362,6 +369,11 @@ def summarize_manual_audit(audit: dict[str, object]) -> dict[str, object]:
         "total_missing_sector_hours": total_missing_sector_hours,
         "sector_mismatch_hours": sector_mismatch_hours,
         "sector_distance": sector_distance,
+        "average_manual_similarity_percent": (
+            round(similarity_sum / similarity_count, 1)
+            if similarity_count
+            else None
+        ),
         "per_configuration": per_configuration,
     }
 

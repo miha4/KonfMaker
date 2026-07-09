@@ -84,6 +84,8 @@ OFFICER_WORK_PENALTY = 5_000
 OFFICER_MIDDLE_SLOT_PENALTY = 900
 ROLE_EDGE_EXCEPTION_PENALTY = 250_000
 FMP_LEADER_OVERLAP_PENALTY = 1_200_000
+DEFAULT_FMP_SHIFT = "A9"
+FMP_AUTO_SHIFT_CODES = ("A7", "A8", "A9", "A10", "A11")
 SECTOR_SWITCH_PENALTY = 10
 SEAT_REPEAT_PENALTY = 3
 CONFIG_LIBRARY_ENV = "KONFMAKER_CONFIG_LIBRARY_CSV"
@@ -359,9 +361,14 @@ def role_sector_limit(request: CalculatorRequest, role: str | None) -> int | Non
 
 def fmp_leader_overlap_penalty(first: PersonState, second: PersonState) -> int:
     roles = {(first.role or "").upper(), (second.role or "").upper()}
-    if "FMP" in roles and roles.intersection({"V1", "V2"}):
+    if "FMP" in roles and roles.intersection({"V1", "V2", "V3"}):
         return FMP_LEADER_OVERLAP_PENALTY
     return 0
+
+
+def is_fmp_vi_pair(first: PersonState, second: PersonState) -> bool:
+    roles = {(first.role or "").upper(), (second.role or "").upper()}
+    return "FMP" in roles and bool(roles.intersection({"V1", "V2", "V3"}))
 
 
 def max_sector_hours_for_person(
@@ -406,6 +413,8 @@ def role_display_id(role: str | None) -> str | None:
         return "Vi2"
     if role == "V3":
         return "Vi3"
+    if role == "FMP":
+        return "FMP"
     return None
 
 
@@ -449,6 +458,58 @@ def enabled_regular_shift_codes(request: CalculatorRequest) -> set[str]:
     return {shift.code for shift in enabled_shift_rules(request.settings.shifts)}
 
 
+def configured_regular_shift_codes(request: CalculatorRequest) -> set[str]:
+    return {shift.code for shift in request.settings.shifts}
+
+
+def fmp_fixed_shift(request: CalculatorRequest) -> str:
+    shift = (request.fmp_shift or DEFAULT_FMP_SHIFT).strip()
+    return shift or DEFAULT_FMP_SHIFT
+
+
+def fmp_shift_candidates(request: CalculatorRequest, *, only_enabled: bool = True) -> list[str]:
+    if not request.include_fmp:
+        return []
+    available = enabled_regular_shift_codes(request) if only_enabled else configured_regular_shift_codes(request)
+    if request.fmp_shift_mode == "fixed":
+        shift = fmp_fixed_shift(request)
+        return [shift] if shift in available else []
+    return [shift for shift in FMP_AUTO_SHIFT_CODES if shift in available]
+
+
+def is_auto_fmp_mode(request: CalculatorRequest) -> bool:
+    return request.include_fmp and request.fmp_shift_mode == "auto"
+
+
+def is_auto_fmp_candidate(request: CalculatorRequest, person: PersonState) -> bool:
+    return (
+        is_auto_fmp_mode(request)
+        and person.role == "FMP"
+        and person.source == REGULAR_SOURCE
+        and person.shift in FMP_AUTO_SHIFT_CODES
+    )
+
+
+def auto_fmp_candidate_indexes(people: list[PersonState], request: CalculatorRequest) -> set[int]:
+    return {
+        index
+        for index, person in enumerate(people)
+        if is_auto_fmp_candidate(request, person)
+    }
+
+
+def required_indexes_for_seed_people(people: list[PersonState], request: CalculatorRequest) -> set[int]:
+    return set(range(len(people))) - auto_fmp_candidate_indexes(people, request)
+
+
+def reserved_license_counts(people: list[PersonState], request: CalculatorRequest) -> Counter[str]:
+    counts = Counter(person.license for person in people)
+    auto_fmp_count = len(auto_fmp_candidate_indexes(people, request))
+    if auto_fmp_count > 1:
+        counts["FL"] -= auto_fmp_count - 1
+    return counts
+
+
 def enabled_officer_shift_codes(request: CalculatorRequest) -> set[str]:
     return {shift.code for shift in enabled_shift_rules(request.settings.officer_shifts)}
 
@@ -479,16 +540,19 @@ def night_shift_license_caps(request: CalculatorRequest) -> dict[tuple[str, str]
 def can_work_slot(worked: list[int], slot: int, max_consecutive: int, rest_after_max: int) -> bool:
     candidate_worked = set(worked) | {slot}
     consecutive_before = 0
-    cursor = slot - 1
+    cursor = (slot - 1) % HOURS_IN_DAY
     while cursor in candidate_worked:
         consecutive_before += 1
-        cursor -= 1
+        cursor = (cursor - 1) % HOURS_IN_DAY
+        if cursor == slot:
+            break
     if consecutive_before >= max_consecutive:
         return False
 
     window_size = max_consecutive + rest_after_max
-    for window_start in range(max(0, slot - window_size + 1), slot + 1):
-        window = range(window_start, window_start + window_size)
+    for offset in range(window_size):
+        window_start = (slot - offset) % HOURS_IN_DAY
+        window = [(window_start + index) % HOURS_IN_DAY for index in range(window_size)]
         if slot in window and sum(1 for item in window if item in candidate_worked) > max_consecutive:
             return False
     return True
@@ -773,11 +837,22 @@ def smooth_sector_rotations(
         chosen_sectors = list(sectors)
 
         def hour_cost(candidate: list[ScheduledSector]) -> int:
-            return sum(
+            seat_cost = sum(
                 assignment_cost(worker_id, sector.sector_name, seat)
                 for sector in candidate
                 for seat, worker_id in enumerate((sector.lower_worker, sector.upper_worker))
             )
+            worker_ids = [
+                worker_id
+                for sector in candidate
+                for worker_id in (sector.lower_worker, sector.upper_worker)
+            ]
+            workers = [people_by_id[worker_id] for worker_id in worker_ids if worker_id in people_by_id]
+            overlap_cost = 0
+            for first_index, first_worker in enumerate(workers):
+                for second_worker in workers[first_index + 1:]:
+                    overlap_cost += fmp_leader_overlap_penalty(first_worker, second_worker)
+            return seat_cost + overlap_cost
 
         def worker_at(candidate: list[ScheduledSector], sector_index: int, seat: int) -> str:
             sector = candidate[sector_index]
@@ -891,6 +966,18 @@ def create_mandatory_people(
             return
         add(license_name, shift, role)
 
+    def fixed_fmp_covers_auto_requirement() -> bool:
+        nonlocal covered_required_count
+        for index, person in enumerate(fixed_candidates):
+            if index in used_fixed_indexes:
+                continue
+            if person.license != "FL" or (person.role or "").strip().upper() != "FMP":
+                continue
+            used_fixed_indexes.add(index)
+            covered_required_count += 1
+            return True
+        return False
+
     if request.settings.include_required_shift_leaders:
         require("FL", "A7", "V1")
         require("FL", "A14", "V2")
@@ -901,7 +988,24 @@ def create_mandatory_people(
         require("FL", "A21", None)
 
     if request.include_fmp:
-        require("FL", "A9", "FMP")
+        fmp_candidates = fmp_shift_candidates(request)
+        if fmp_candidates:
+            if request.fmp_shift_mode == "auto":
+                if not fixed_fmp_covers_auto_requirement():
+                    for shift_code in fmp_candidates:
+                        add("FL", shift_code, "FMP")
+                    notes.append(
+                        "Auto FMP: CP-SAT bo sam izbral eno FMP izmeno med "
+                        + ", ".join(fmp_candidates)
+                        + "."
+                    )
+            else:
+                require("FL", fmp_candidates[0], "FMP")
+        else:
+            requested_shift = fmp_fixed_shift(request)
+            warnings.append(
+                f"FMP je vključen, vendar izmena {requested_shift} ni aktivna v nastavitvah pravil, zato FMP ni dodan."
+            )
 
     if covered_required_count:
         notes.append(
@@ -1112,13 +1216,32 @@ def response_from_schedule(
 ) -> CalculatorResponse:
     shift_map = shift_map_for_request(request)
     display_sector_names = sector_display_names_for_max(request.settings.max_sectors_per_hour)
+    display_id_by_person_id: dict[str, str] = {}
+    used_display_ids: set[str] = set()
+    for person in scheduled.people:
+        requested_display_id = role_display_id(person.role)
+        if requested_display_id and requested_display_id not in used_display_ids:
+            display_id = requested_display_id
+        else:
+            display_id = person.id
+            if display_id in used_display_ids:
+                suffix = 2
+                while f"{person.id}-{suffix}" in used_display_ids:
+                    suffix += 1
+                display_id = f"{person.id}-{suffix}"
+        display_id_by_person_id[person.id] = display_id
+        used_display_ids.add(display_id)
+
+    def display_worker_id(worker_id: str) -> str:
+        return display_id_by_person_id.get(worker_id, worker_id)
+
     person_capacity = {
         person.id: max_sector_hours_for_person(person, request, shift_map)
         for person in scheduled.people
     }
     response_people = [
         VirtualPerson(
-            id=person.id,
+            id=display_worker_id(person.id),
             license=person.license,
             shift=display_shift_for_person(person),
             role=person.role,
@@ -1140,12 +1263,12 @@ def response_from_schedule(
             HourlyCoverage(
                 hour=hour_label(slot),
                 open_sectors=len(scheduled.hourly_sectors[slot]),
-                workers=workers,
+                workers=[display_worker_id(worker_id) for worker_id in workers],
                 sector_workers=[
                     SectorAssignment(
                         sector_name=sector_name,
-                        lower_worker=sector.lower_worker,
-                        upper_worker=sector.upper_worker,
+                        lower_worker=display_worker_id(sector.lower_worker),
+                        upper_worker=display_worker_id(sector.upper_worker),
                     )
                     if (sector := assignments_by_sector.get(sector_name)) is not None
                     else None
@@ -1671,9 +1794,17 @@ def fixed_shift_total_caps(request: CalculatorRequest) -> dict[str, int]:
     return dict(caps)
 
 
-def fixed_shift_cap_warnings(people: list[PersonState], shift_caps: dict[str, int]) -> list[str]:
+def fixed_shift_cap_warnings(
+    people: list[PersonState],
+    shift_caps: dict[str, int],
+    request: CalculatorRequest | None = None,
+) -> list[str]:
     warnings: list[str] = []
-    people_by_shift = Counter(person.shift for person in people)
+    people_by_shift = Counter(
+        person.shift
+        for person in people
+        if request is None or not is_auto_fmp_candidate(request, person)
+    )
     for shift_code, cap in sorted(shift_caps.items()):
         if people_by_shift[shift_code] > cap:
             warnings.append(
@@ -1789,6 +1920,10 @@ def solve_schedule_with_cp_sat(
     }
     for person_index in required_indexes:
         model.Add(selected[person_index] == 1)
+
+    auto_fmp_indexes = sorted(auto_fmp_candidate_indexes(candidates, request))
+    if auto_fmp_indexes:
+        model.AddExactlyOne([selected[index] for index in auto_fmp_indexes])
 
     if selected_total_cap is not None:
         model.Add(sum(selected.values()) <= selected_total_cap)
@@ -1952,9 +2087,12 @@ def solve_schedule_with_cp_sat(
 
     window_size = max_consecutive + rest_after_max
     for index in range(len(candidates)):
-        for window_start in range(0, HOURS_IN_DAY - window_size + 1):
+        for window_start in range(HOURS_IN_DAY):
             model.Add(
-                sum(work.get((index, slot), 0) for slot in range(window_start, window_start + window_size))
+                sum(
+                    work.get((index, (window_start + offset) % HOURS_IN_DAY), 0)
+                    for offset in range(window_size)
+                )
                 <= max_consecutive
             )
         model.Add(
@@ -1967,8 +2105,7 @@ def solve_schedule_with_cp_sat(
     for first_index, first_person in enumerate(candidates):
         for second_index in range(first_index + 1, len(candidates)):
             second_person = candidates[second_index]
-            penalty = fmp_leader_overlap_penalty(first_person, second_person)
-            if penalty <= 0:
+            if not is_fmp_vi_pair(first_person, second_person):
                 continue
             shared_slots = sorted(set(available_slots[first_index]).intersection(available_slots[second_index]))
             for slot in shared_slots:
@@ -1978,8 +2115,10 @@ def solve_schedule_with_cp_sat(
                     continue
                 overlap = model.NewBoolVar(f"fmp_leader_overlap_{first_index}_{second_index}_{slot}")
                 model.Add(overlap >= first_work + second_work - 1)
-                fmp_leader_overlap_penalty_terms.append(penalty * overlap)
-                fmp_leader_overlap_penalty_ceiling += penalty
+                model.Add(overlap <= first_work)
+                model.Add(overlap <= second_work)
+                fmp_leader_overlap_penalty_terms.append(FMP_LEADER_OVERLAP_PENALTY * overlap)
+                fmp_leader_overlap_penalty_ceiling += FMP_LEADER_OVERLAP_PENALTY
 
     covered_sector_count = sum(covered_sectors.values())
     if minimum_covered_sector_hours is not None:
@@ -2053,6 +2192,106 @@ def solve_schedule_with_cp_sat(
         - fmp_leader_overlap_penalty_value
         - assignment_penalty
     )
+
+    def warm_start_source_group(source: str | None) -> str:
+        if source in {OFFICER_SOURCE, OFFICE_POOL_SOURCE}:
+            return "office"
+        if source in {FIXED_SOURCE, WHAT_IF_SOURCE}:
+            return "fixed"
+        return REGULAR_SOURCE
+
+    def add_warm_start_hints() -> None:
+        warm_start = request.warm_start
+        if not isinstance(warm_start, dict):
+            return
+        warm_people = warm_start.get("people")
+        if not isinstance(warm_people, list):
+            return
+
+        used_candidate_indexes: set[int] = set()
+        label_to_candidate_index: dict[str, int] = {}
+        hinted_variables: set[int] = set()
+
+        def add_hint(variable: cp_model.IntVar, value: int) -> None:
+            variable_index = variable.Index()
+            if variable_index in hinted_variables:
+                return
+            hinted_variables.add(variable_index)
+            model.AddHint(variable, value)
+
+        for raw_person in warm_people:
+            if not isinstance(raw_person, dict):
+                continue
+            label = str(raw_person.get("id") or "").strip()
+            license_name = str(raw_person.get("license") or "").strip()
+            shift_code = str(raw_person.get("shift") or "").strip()
+            role = raw_person.get("role")
+            role_name = str(role).strip() if role is not None and str(role).strip() else None
+            source_group = warm_start_source_group(str(raw_person.get("source") or REGULAR_SOURCE))
+            if not label or not license_name or not shift_code:
+                continue
+
+            exact_match: int | None = None
+            fallback_match: int | None = None
+            for index, person in enumerate(candidates):
+                if index in used_candidate_indexes:
+                    continue
+                if person.license != license_name or person.shift != shift_code or person.role != role_name:
+                    continue
+                if warm_start_source_group(person.source) == source_group:
+                    exact_match = index
+                    break
+                if fallback_match is None:
+                    fallback_match = index
+
+            candidate_index = exact_match if exact_match is not None else fallback_match
+            if candidate_index is None:
+                continue
+            used_candidate_indexes.add(candidate_index)
+            label_to_candidate_index[label] = candidate_index
+            add_hint(selected[candidate_index], 1)
+
+        warm_hours = warm_start.get("hourly_coverage")
+        if not isinstance(warm_hours, list):
+            return
+
+        for slot, raw_hour in enumerate(warm_hours[:HOURS_IN_DAY]):
+            if not isinstance(raw_hour, dict):
+                continue
+            raw_assignments = raw_hour.get("sector_workers")
+            if not isinstance(raw_assignments, list):
+                continue
+
+            for raw_assignment in raw_assignments:
+                if not isinstance(raw_assignment, dict):
+                    continue
+                sector_name = str(raw_assignment.get("sector_name") or "").strip()
+                if not sector_name:
+                    continue
+
+                for seat, worker_key in enumerate(("lower_worker", "upper_worker")):
+                    worker_label = str(raw_assignment.get(worker_key) or "").strip()
+                    candidate_index = label_to_candidate_index.get(worker_label)
+                    if candidate_index is None:
+                        continue
+                    work_var = work.get((candidate_index, slot))
+                    if work_var is not None:
+                        add_hint(work_var, 1)
+                    for (slot_key, sector_position, seat_key), assignment_options in seat_assignments.items():
+                        if slot_key != slot or seat_key != seat:
+                            continue
+                        sector_names = sector_names_by_slot.get(slot_key, [])
+                        if sector_position >= len(sector_names) or sector_names[sector_position] != sector_name:
+                            continue
+                        for option_candidate_index, assignment_var in assignment_options:
+                            if option_candidate_index == candidate_index:
+                                add_hint(assignment_var, 1)
+                                cover_var = covered_sectors.get((slot_key, sector_position, sector_name))
+                                if cover_var is not None:
+                                    add_hint(cover_var, 1)
+                                break
+
+    add_warm_start_hints()
 
     def best_bound_sector_hours(best_objective_bound: float | None) -> int | None:
         if best_objective_bound is None:
@@ -2433,9 +2672,9 @@ def calculate_pareto(
     notes.extend(mandatory_notes)
     warnings.extend(mandatory_warnings)
     shift_caps = fixed_shift_total_caps(request)
-    warnings.extend(fixed_shift_cap_warnings(seed_people, shift_caps))
+    warnings.extend(fixed_shift_cap_warnings(seed_people, shift_caps, request))
 
-    reserved_counts = Counter(person.license for person in seed_people)
+    reserved_counts = reserved_license_counts(seed_people, request)
     officer_license_counts = officer_counts_by_license(request)
     office_pool_license_counts = office_pool_counts_by_license(request)
     minimum_required_fl = reserved_counts["FL"]
@@ -2470,7 +2709,7 @@ def calculate_pareto(
         )
 
     people = list(seed_people)
-    required_indexes = set(range(len(people)))
+    required_indexes = required_indexes_for_seed_people(people, request)
     remaining_fl = request.fl_count - reserved_counts["FL"] - officer_license_counts["FL"]
     remaining_aps = request.aps_count - reserved_counts["APS"] - officer_license_counts["APS"]
     remaining_acs = request.acs_count - reserved_counts["ACS"] - officer_license_counts["ACS"]
@@ -2680,11 +2919,11 @@ def calculate_demand_to_staff(
     notes.extend(fixed_notes)
     notes.extend(locked_notes)
     notes.extend(mandatory_notes)
-    required_indexes = set(range(len(people)))
+    required_indexes = required_indexes_for_seed_people(people, request)
     requested_sector_hours = sum(target_sector_counts)
     shift_caps = fixed_shift_total_caps(request)
-    warnings.extend(fixed_shift_cap_warnings(people, shift_caps))
-    reserved_counts = Counter(person.license for person in people)
+    warnings.extend(fixed_shift_cap_warnings(people, shift_caps, request))
+    reserved_counts = reserved_license_counts(people, request)
     officer_license_counts = officer_counts_by_license(request)
     office_pool_license_counts = office_pool_counts_by_license(request)
     available_license_counts = Counter(
@@ -3224,12 +3463,12 @@ def calculate(
     notes.extend(fixed_notes)
     notes.extend(locked_notes)
     notes.extend(mandatory_notes)
-    reserved_counts = Counter(person.license for person in seed_people)
+    reserved_counts = reserved_license_counts(seed_people, request)
     officer_license_counts = officer_counts_by_license(request)
     office_pool_license_counts = office_pool_counts_by_license(request)
     minimum_required_fl = reserved_counts["FL"]
     shift_caps = fixed_shift_total_caps(request)
-    warnings.extend(fixed_shift_cap_warnings(seed_people, shift_caps))
+    warnings.extend(fixed_shift_cap_warnings(seed_people, shift_caps, request))
 
     insufficient_reserved_licenses = [
         license_name
@@ -3271,7 +3510,7 @@ def calculate(
         )
 
     people = list(seed_people)
-    required_indexes = set(range(len(people)))
+    required_indexes = required_indexes_for_seed_people(people, request)
     remaining_fl = request.fl_count - reserved_counts["FL"] - officer_license_counts["FL"]
     remaining_aps = request.aps_count - reserved_counts["APS"] - officer_license_counts["APS"]
     remaining_acs = request.acs_count - reserved_counts["ACS"] - officer_license_counts["ACS"]
@@ -3490,7 +3729,10 @@ def calculate(
     notes.append("Kalkulator odpira največ toliko sektorjev, kot jih uporabnik označi v urnem vnosu želene odprtosti.")
     notes.append("ALL sektor zahteva 2× FL; LOWER sprejme APS/FL; UPPER, MID, HIGH in TOP sprejmejo ACS/FL.")
     notes.append("Razpored se po CP-SAT rešitvi lokalno zgladi: če ne zmanjša pokritosti, ohrani isti sektor in zamenja levo/desno pozicijo po eni uri.")
-    notes.append("FMP je dovoljen kot sektorski kontrolor, vendar ima pri izbiri delavcev slabšo prioriteto.")
+    notes.append(
+        "FMP je dovoljen kot sektorski kontrolor, vendar ima pri izbiri delavcev slabšo prioriteto; "
+        "FMP in Vi1/Vi2/Vi3 ne smeta biti hkrati na sektorju v isti uri."
+    )
     active_officers = [person for person in scheduled.people if is_officer(person) and person.sector_hours > 0]
     if active_officers:
         notes.append(f"Uporabljenih je {len(active_officers)} officerjev iz pisarne.")

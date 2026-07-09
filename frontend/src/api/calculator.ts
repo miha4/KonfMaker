@@ -198,6 +198,10 @@ export function getCalculationJob(jobId: string): Promise<CalculationJobStatus> 
   return requestJson<CalculationJobStatus>(`/api/jobs/${encodeURIComponent(jobId)}`);
 }
 
+export function getCalculationJobs(): Promise<CalculationJobStatus[]> {
+  return requestJson<CalculationJobStatus[]>('/api/jobs');
+}
+
 export function getCalculationJobResult(jobId: string): Promise<CalculatorResponse> {
   return requestJson<CalculatorResponse>(`/api/jobs/${encodeURIComponent(jobId)}/result`);
 }

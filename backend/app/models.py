@@ -124,6 +124,8 @@ class CalculatorRequest(BaseModel):
     aps_count: int = Field(default=0, ge=0, le=80)
     acs_count: int = Field(ge=0, le=80)
     include_fmp: bool = True
+    fmp_shift_mode: str = "auto"
+    fmp_shift: str = "A9"
     settings: CalculatorSettings
     requested_sector_counts: list[int] | None = None
     fixed_staff: list[FixedStaffRule] = Field(default_factory=list)
@@ -135,10 +137,26 @@ class CalculatorRequest(BaseModel):
     prefer_minimal_fl: bool = False
     office_fallback_mode: str = "auto"
     preferred_manual_configuration_id: str | None = None
+    warm_start: dict[str, object] | None = None
+    warm_start_snapshot_id: str | None = None
 
     @field_validator("preferred_manual_configuration_id")
     @classmethod
     def blank_preferred_manual_configuration_id_is_none(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+    @field_validator("fmp_shift")
+    @classmethod
+    def clean_fmp_shift(cls, value: str) -> str:
+        cleaned = value.strip()
+        return cleaned or "A9"
+
+    @field_validator("warm_start_snapshot_id")
+    @classmethod
+    def blank_warm_start_snapshot_id_is_none(cls, value: str | None) -> str | None:
         if value is None:
             return None
         cleaned = value.strip()
@@ -150,6 +168,8 @@ class CalculatorRequest(BaseModel):
             raise ValueError("Neznan način izračuna.")
         if self.office_fallback_mode not in {"auto", "disabled", "force"}:
             raise ValueError("Način office fallback mora biti auto, disabled ali force.")
+        if self.fmp_shift_mode not in {"auto", "fixed"}:
+            raise ValueError("Način FMP izmene mora biti auto ali fixed.")
         if self.calculation_mode == "staff_to_coverage" and self.total_people < 1:
             raise ValueError("Skupno število ljudi mora biti večje od 0.")
         if self.calculation_mode == "staff_to_coverage" and self.fl_count + self.aps_count + self.acs_count != self.total_people:
@@ -163,6 +183,8 @@ class CalculatorRequest(BaseModel):
             ):
                 raise ValueError("Želena odprtost mora biti med 0 in največ sektorji hkrati.")
         configured_shift_codes = {shift.code for shift in self.settings.shifts}
+        if self.include_fmp and self.fmp_shift_mode == "fixed" and self.fmp_shift not in configured_shift_codes:
+            raise ValueError("FMP izmena mora uporabljati eno izmed nastavljenih rednih izmen.")
         if any(item.shift not in configured_shift_codes for item in self.fixed_staff):
             raise ValueError("Fiksna dodatna izmena mora uporabljati eno izmed nastavljenih izmen.")
         if any(item.shift not in configured_shift_codes for item in self.locked_staff):

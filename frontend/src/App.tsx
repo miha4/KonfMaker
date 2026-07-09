@@ -5,6 +5,7 @@ import {
   compareResultToConfigurations,
   deleteManualConfiguration,
   getCalculationJob,
+  getCalculationJobs,
   getCalculationJobResult,
   getParetoJobResult,
   getDefaultSettings,
@@ -136,6 +137,13 @@ type OfficePool = {
   aps: number;
   acs: number;
 };
+type OfficeFallbackMode = 'auto' | 'fixed';
+type OfficeFallbackSelection = {
+  mode: OfficeFallbackMode;
+  pool: OfficePool;
+  shift?: string;
+};
+type FmpShiftMode = 'auto' | 'fixed';
 type SavedCalculatorInputs = Partial<{
   calculationMode: CalculationMode;
   totalPeople: number;
@@ -151,6 +159,8 @@ type SavedCalculatorInputs = Partial<{
   officerStaff: OfficerStaffRow[];
   officePool: OfficePool;
   includeFmp: boolean;
+  fmpShiftMode: FmpShiftMode;
+  fmpShift: string;
 }>;
 type JobRestartPlan =
   | {
@@ -340,6 +350,9 @@ function TheoryPanel() {
 const DAY_START = 7;
 const HOURS_IN_DAY = 24;
 const sectorColumnLabels = ['ALL', 'LOWER', 'UPPER', 'MID', 'HIGH', 'TOP'];
+const FMP_AUTO_SHIFT_CODES = ['A7', 'A8', 'A9', 'A10', 'A11'];
+const DEFAULT_FMP_SHIFT = 'A9';
+const FMP_BLOCKED_SHIFT_CODES = new Set(['A17', 'A21']);
 const distinctWorkerColors: WorkerColor[] = [
   { background: '#ff9f91', border: '#c83f35', text: '#4f110d' },
   { background: '#b7d8ff', border: '#4c8fdb', text: '#123f73' },
@@ -637,9 +650,10 @@ const jobStatusLabels: Record<CalculationJobStatus['status'], string> = {
   failed: 'Napaka',
 };
 
-function createQueuedJobStatus(jobId: string): CalculationJobStatus {
+function createQueuedJobStatus(jobId: string, kind = 'calculation'): CalculationJobStatus {
   return {
     job_id: jobId,
+    kind,
     status: 'queued',
     progress: 0,
     message: 'Čaka v vrsti za izračun.',
@@ -677,6 +691,7 @@ function createQueuedJobStatus(jobId: string): CalculationJobStatus {
     pattern_estimate_low_seconds: null,
     pattern_estimate_high_seconds: null,
     pattern_proven_minimum: null,
+    warm_start_snapshot_id: null,
   };
 }
 
@@ -768,6 +783,35 @@ function officePoolRulesFromPool(pool: OfficePool): OfficePoolRule[] {
   ].filter((row) => row.count > 0) as OfficePoolRule[];
 }
 
+function officerStaffRulesFromPool(pool: OfficePool, shift: string): OfficerStaffRule[] {
+  if (!shift) {
+    return [];
+  }
+  return [
+    { count: clamp(pool.fl, 0, 80), license: 'FL', shift },
+    { count: clamp(pool.aps, 0, 80), license: 'APS', shift },
+    { count: clamp(pool.acs, 0, 80), license: 'ACS', shift },
+  ].filter((row) => row.count > 0) as OfficerStaffRule[];
+}
+
+function mergeOfficerStaffRules(rows: OfficerStaffRule[]): OfficerStaffRule[] {
+  const merged = new Map<string, OfficerStaffRule>();
+  rows.forEach((row) => {
+    const count = clamp(row.count, 0, 80);
+    if (count <= 0) {
+      return;
+    }
+    const key = `${row.license}:${row.shift}`;
+    const current = merged.get(key);
+    if (current) {
+      current.count = clamp(current.count + count, 0, 80);
+    } else {
+      merged.set(key, { ...row, count });
+    }
+  });
+  return Array.from(merged.values());
+}
+
 function officePoolFromPayload(payload: CalculatorRequest): OfficePool {
   return payload.office_pool.reduce<OfficePool>((pool, row) => {
     if (row.license === 'FL') {
@@ -784,6 +828,13 @@ function hasOfficePool(payload: CalculatorRequest): boolean {
   return officePoolTotal(officePoolFromPayload(payload)) > 0;
 }
 
+function hasOfficeFallbackSelection(selection: OfficeFallbackSelection): boolean {
+  if (officePoolTotal(selection.pool) <= 0) {
+    return false;
+  }
+  return selection.mode === 'auto' || Boolean(selection.shift);
+}
+
 function statusNeedsTimeLimitDecision(status: CalculationJobStatus, restartPlan: JobRestartPlan | null): boolean {
   if (status.status !== 'finished' || restartPlan === null || !status.solver_stop_reason) {
     return false;
@@ -797,10 +848,42 @@ function statusNeedsTimeLimitDecision(status: CalculationJobStatus, restartPlan:
   return true;
 }
 
-function clonePayloadForRegularContinuation(payload: CalculatorRequest, extraSeconds: number): CalculatorRequest {
+function warmStartFromResult(result?: CalculatorResponse | null): CalculatorRequest['warm_start'] {
+  if (!result) {
+    return null;
+  }
+  return {
+    people: result.people,
+    hourly_coverage: result.hourly_coverage,
+  };
+}
+
+function warmStartContinuationFields(
+  warmStartResult?: CalculatorResponse | null,
+  warmStartSnapshotId?: string | null,
+): Pick<CalculatorRequest, 'warm_start' | 'warm_start_snapshot_id'> {
+  if (warmStartSnapshotId) {
+    return {
+      warm_start: null,
+      warm_start_snapshot_id: warmStartSnapshotId,
+    };
+  }
+  return {
+    warm_start: warmStartFromResult(warmStartResult),
+    warm_start_snapshot_id: null,
+  };
+}
+
+function clonePayloadForRegularContinuation(
+  payload: CalculatorRequest,
+  extraSeconds: number,
+  warmStartResult?: CalculatorResponse | null,
+  warmStartSnapshotId?: string | null,
+): CalculatorRequest {
   return {
     ...payload,
     office_fallback_mode: 'disabled',
+    ...warmStartContinuationFields(warmStartResult, warmStartSnapshotId),
     settings: {
       ...payload.settings,
       cp_sat_time_limit_seconds: Math.min(3600, payload.settings.cp_sat_time_limit_seconds + extraSeconds),
@@ -866,21 +949,42 @@ function clonePayloadForLockedRoster(payload: CalculatorRequest, result: Calcula
 
 function clonePayloadForOfficeFallback(
   payload: CalculatorRequest,
-  officePoolOverride?: OfficePool,
+  officeSelection?: OfficeFallbackSelection,
   warmStartResult?: CalculatorResponse | null,
+  warmStartSnapshotId?: string | null,
 ): CalculatorRequest {
-  const overrideRules = officePoolOverride && officePoolTotal(officePoolOverride) > 0
-    ? officePoolRulesFromPool(officePoolOverride)
+  const fallbackSelection: OfficeFallbackSelection = officeSelection ?? {
+    mode: 'auto',
+    pool: officePoolFromPayload(payload),
+  };
+
+  if (fallbackSelection.mode === 'fixed' && fallbackSelection.shift) {
+    const fixedOfficeRules = officerStaffRulesFromPool(fallbackSelection.pool, fallbackSelection.shift);
+    return {
+      ...payload,
+      fixed_staff: payload.fixed_staff,
+      locked_staff: payload.locked_staff,
+      officer_staff: mergeOfficerStaffRules([...payload.officer_staff, ...fixedOfficeRules]),
+      office_pool: [],
+      office_fallback_mode: 'disabled',
+      ...warmStartContinuationFields(warmStartResult, warmStartSnapshotId),
+      settings: {
+        ...payload.settings,
+        cp_sat_no_improvement_seconds: Math.min(payload.settings.cp_sat_no_improvement_seconds || 60, 60),
+      },
+    };
+  }
+
+  const overrideRules = officePoolTotal(fallbackSelection.pool) > 0
+    ? officePoolRulesFromPool(fallbackSelection.pool)
     : payload.office_pool;
-  const warmStartLockedStaff = warmStartResult
-    ? lockedStaffFromResultForWarmStart(warmStartResult, payload)
-    : payload.locked_staff;
   return {
     ...payload,
-    fixed_staff: warmStartResult ? [] : payload.fixed_staff,
-    locked_staff: warmStartLockedStaff,
+    fixed_staff: payload.fixed_staff,
+    locked_staff: payload.locked_staff,
     office_pool: overrideRules,
     office_fallback_mode: 'force',
+    ...warmStartContinuationFields(warmStartResult, warmStartSnapshotId),
     settings: {
       ...payload.settings,
       cp_sat_no_improvement_seconds: Math.min(payload.settings.cp_sat_no_improvement_seconds || 60, 60),
@@ -1016,13 +1120,21 @@ function TimeLimitDecisionPanel({
 }: {
   decision: TimeLimitDecision;
   onContinue: () => void;
-  onTryOfficeFallback: (officePool?: OfficePool) => void;
+  onTryOfficeFallback: (selection: OfficeFallbackSelection) => void;
   onKeepCurrent: () => void;
   isBusy: boolean;
 }) {
   const initialOfficePool = decision.restartPlan.kind === 'one-down'
     ? { fl: 0, aps: 0, acs: 0 }
     : officePoolFromPayload(decision.restartPlan.payload);
+  const officeShiftOptions = decision.restartPlan.kind === 'one-down'
+    ? []
+    : decision.restartPlan.payload.settings.officer_shifts
+      .filter((shift) => shift.enabled !== false)
+      .map((shift) => shift.code);
+  const defaultOfficeShift = officeShiftOptions[0] ?? fallbackSettings.officer_shifts[0]?.code ?? '';
+  const [officeFallbackMode, setOfficeFallbackMode] = useState<OfficeFallbackMode>('auto');
+  const [draftOfficeShift, setDraftOfficeShift] = useState(defaultOfficeShift);
   const [draftOfficePool, setDraftOfficePool] = useState<OfficePool>(
     officePoolTotal(initialOfficePool) > 0 ? initialOfficePool : { fl: 1, aps: 0, acs: 0 },
   );
@@ -1030,11 +1142,26 @@ function TimeLimitDecisionPanel({
     const nextOfficePool = decision.restartPlan.kind === 'one-down'
       ? { fl: 0, aps: 0, acs: 0 }
       : officePoolFromPayload(decision.restartPlan.payload);
+    const nextOfficeShiftOptions = decision.restartPlan.kind === 'one-down'
+      ? []
+      : decision.restartPlan.payload.settings.officer_shifts
+        .filter((shift) => shift.enabled !== false)
+        .map((shift) => shift.code);
     setDraftOfficePool(officePoolTotal(nextOfficePool) > 0 ? nextOfficePool : { fl: 1, aps: 0, acs: 0 });
+    setOfficeFallbackMode('auto');
+    setDraftOfficeShift(nextOfficeShiftOptions[0] ?? fallbackSettings.officer_shifts[0]?.code ?? '');
   }, [decision]);
 
   const hasPresetOffice = decision.restartPlan.kind !== 'one-down' && hasOfficePool(decision.restartPlan.payload);
-  const canTryOfficeFallback = decision.restartPlan.kind !== 'one-down' && officePoolTotal(draftOfficePool) > 0;
+  const officeSelection: OfficeFallbackSelection = {
+    mode: officeFallbackMode,
+    pool: draftOfficePool,
+    shift: officeFallbackMode === 'fixed' && officeShiftOptions.includes(draftOfficeShift)
+      ? draftOfficeShift
+      : undefined,
+  };
+  const canTryOfficeFallback = decision.restartPlan.kind !== 'one-down'
+    && hasOfficeFallbackSelection(officeSelection);
   const updateDraftOfficePool = (key: keyof OfficePool, value: number) => {
     setDraftOfficePool((current) => ({ ...current, [key]: clamp(value, 0, 20) }));
   };
@@ -1061,12 +1188,27 @@ function TimeLimitDecisionPanel({
           <div>
             <strong>{hasPresetOffice ? 'Operativni office je že vpisan' : 'Dodaj office samo za ta poskus'}</strong>
             <span>
-              {decision.currentResult
-                ? 'Fallback bo začel iz trenutno najboljše sestave in dodal office kot dodatni vzvod.'
-                : hasPresetOffice
-                  ? 'Potrdi ali prilagodi število ljudi, ki jih solver sme porabiti kot zadnji vzvod.'
-                  : 'Če redna faza ne najde polne pokritosti, lahko tukaj dodaš office pool za namenski fallback.'}
+              {officeFallbackMode === 'auto'
+                ? 'Solver bo sam preizkusil aktivne office izmene in uporabil tisto, ki najbolje popravi pokritost.'
+                : 'Izbrana office izmena bo dodana kot konkretna office oseba. Trenutna rešitev je samo warm start, zato lahko solver premeša ostale izmene.'}
             </span>
+          </div>
+          <div className="office-fallback-mode">
+            <button
+              className={officeFallbackMode === 'auto' ? 'active' : ''}
+              type="button"
+              onClick={() => setOfficeFallbackMode('auto')}
+            >
+              Poišči najboljši fit
+            </button>
+            <button
+              className={officeFallbackMode === 'fixed' ? 'active' : ''}
+              type="button"
+              disabled={officeShiftOptions.length === 0}
+              onClick={() => setOfficeFallbackMode('fixed')}
+            >
+              Izbrana office izmena
+            </button>
           </div>
           <label>
             FL office
@@ -1098,6 +1240,19 @@ function TimeLimitDecisionPanel({
               onChange={(event) => updateDraftOfficePool('acs', Number(event.target.value))}
             />
           </label>
+          {officeFallbackMode === 'fixed' ? (
+            <label>
+              Office izmena
+              <select
+                value={draftOfficeShift}
+                onChange={(event) => setDraftOfficeShift(event.target.value)}
+              >
+                {officeShiftOptions.map((shiftCode) => (
+                  <option key={shiftCode} value={shiftCode}>{shiftCode}</option>
+                ))}
+              </select>
+            </label>
+          ) : null}
         </div>
       ) : null}
       <div className="decision-actions">
@@ -1108,10 +1263,10 @@ function TimeLimitDecisionPanel({
           <button
             className="secondary-button compact-button"
             disabled={isBusy || !canTryOfficeFallback}
-            onClick={() => onTryOfficeFallback(draftOfficePool)}
+            onClick={() => onTryOfficeFallback(officeSelection)}
             type="button"
           >
-            {hasPresetOffice ? 'Potrdi office fallback' : 'Preizkusi z office izmenami'}
+            {officeFallbackMode === 'auto' ? 'Poišči najboljši office fit' : 'Računaj z izbrano office izmeno'}
           </button>
         ) : null}
         <button className="secondary-button compact-button" disabled={isBusy} onClick={onKeepCurrent} type="button">
@@ -2075,7 +2230,13 @@ function ManualConfigurationsPanel({
     const coveredRows = rows.filter((row) => row.status === 'covered').length;
     const sectorMismatchRows = rows.filter((row) => manualAuditHasSectorMismatch(row)).length;
     const shortfallRows = rows.filter((row) => row.status === 'shortfall').length;
-    return { total: rows.length, coveredRows, sectorMismatchRows, shortfallRows };
+    const similarityRows = rows
+      .map((row) => row.manual_similarity_percent)
+      .filter((value): value is number => typeof value === 'number');
+    const averageSimilarity = similarityRows.length > 0
+      ? Math.round(similarityRows.reduce((sum, value) => sum + value, 0) / similarityRows.length)
+      : null;
+    return { total: rows.length, coveredRows, sectorMismatchRows, shortfallRows, averageSimilarity };
   }, [audit?.rows]);
 
   const selectedAuditRow = useMemo(() => {
@@ -2307,6 +2468,10 @@ function ManualConfigurationsPanel({
                 <strong>{auditSummary.shortfallRows}</strong>
               </div>
               <div>
+                <span>Podobnost</span>
+                <strong>{formatAuditMetric(auditSummary.averageSimilarity, '%')}</strong>
+              </div>
+              <div>
                 <span>Čas</span>
                 <strong>{audit.elapsed_seconds.toFixed(2)} s</strong>
               </div>
@@ -2321,6 +2486,7 @@ function ManualConfigurationsPanel({
                     <th>Model zdaj</th>
                     <th>Manjka</th>
                     <th>Pokritost</th>
+                    <th>Podobnost</th>
                     <th>Status</th>
                   </tr>
                 </thead>
@@ -2342,6 +2508,7 @@ function ManualConfigurationsPanel({
                       <td>{formatAuditMetric(row.model_sector_hours)}</td>
                       <td>{formatAuditMetric(row.model_missing_sector_hours)}</td>
                       <td>{formatAuditMetric(row.model_coverage_percent, '%')}</td>
+                      <td>{formatAuditMetric(row.manual_similarity_percent, '%')}</td>
                       <td>{manualAuditStatusLabel(row)}</td>
                     </tr>
                   ))}
@@ -2359,6 +2526,10 @@ function ManualConfigurationsPanel({
                     <span>Excel {formatAuditMetric(selectedAuditRow.manual_sector_hours)} SH</span>
                     <span>Model {formatAuditMetric(selectedAuditRow.model_sector_hours)} SH</span>
                     <span>Manjka {formatAuditMetric(selectedAuditRow.model_missing_sector_hours)} SH</span>
+                    <span>Podobnost {formatAuditMetric(selectedAuditRow.manual_similarity_percent, '%')}</span>
+                    <span>Ljudje Δ {formatAuditMetric(selectedAuditRow.manual_similarity_people_diff)}</span>
+                    <span>Profil Δ {formatAuditMetric(selectedAuditRow.manual_similarity_sector_profile_diff)}</span>
+                    <span>Workload Δ {formatAuditMetric(selectedAuditRow.manual_similarity_workload_diff)}</span>
                     <span>Solver {selectedAuditRow.solver_status ?? '—'}</span>
                   </div>
                 </div>
@@ -3271,7 +3442,7 @@ function formatMetricsForCopy(result: CalculatorResponse): string {
     ['Vrzel do SH meje', result.solver_gap_to_upper_bound ?? ''],
     ['Splaniranih ljudi', result.planned_people],
     ['Aktivnih na sektorju', result.active_people],
-    ['Minimalno obveznih FL', result.minimum_required_fl],
+    ['Obvezne FL vloge', result.minimum_required_fl],
     ['Manjkajoče ure', result.missing_sector_hours],
     ['Neuporabljeni ljudje', result.unused_people],
     ['Izkoriščenost ljudi', `${result.utilization_percent}%`],
@@ -3695,6 +3866,10 @@ function loadSavedCalculatorInputs(settings: CalculatorSettings): SavedCalculato
     const flCount = clamp(Math.round(finiteNumber(parsed.flCount, 12)), 0, totalPeople);
     const apsCount = clamp(Math.round(finiteNumber(parsed.apsCount, 0)), 0, totalPeople - flCount);
     const ratio: Partial<{ fl: number; aps: number; acs: number }> = parsed.minimumLicenseRatio ?? {};
+    const configuredShiftCodes = new Set(settings.shifts.map((shift) => shift.code));
+    const parsedFmpShift = typeof parsed.fmpShift === 'string' && parsed.fmpShift.trim()
+      ? parsed.fmpShift.trim()
+      : DEFAULT_FMP_SHIFT;
     return {
       calculationMode: parsed.calculationMode === 'demand_to_staff' ? 'demand_to_staff' : 'staff_to_coverage',
       totalPeople,
@@ -3716,6 +3891,10 @@ function loadSavedCalculatorInputs(settings: CalculatorSettings): SavedCalculato
       officerStaff: normalizeSavedOfficerRows(parsed.officerStaff, settings.officer_shifts),
       officePool: normalizeSavedOfficePool(parsed.officePool),
       includeFmp: parsed.includeFmp !== false,
+      fmpShiftMode: parsed.fmpShiftMode === 'fixed' ? 'fixed' : 'auto',
+      fmpShift: configuredShiftCodes.has(parsedFmpShift) && !FMP_BLOCKED_SHIFT_CODES.has(parsedFmpShift)
+        ? parsedFmpShift
+        : DEFAULT_FMP_SHIFT,
     };
   } catch {
     return null;
@@ -3739,7 +3918,10 @@ function NumberField({
 }) {
   return (
     <label className="field">
-      <span>{label}</span>
+      <span className="field-label">
+        {label}
+        {helper ? <MetricInfo text={helper} /> : null}
+      </span>
       <input
         type="number"
         min={min}
@@ -3747,7 +3929,6 @@ function NumberField({
         value={value}
         onChange={(event) => onChange(Number(event.target.value))}
       />
-      {helper ? <small>{helper}</small> : null}
     </label>
   );
 }
@@ -3764,7 +3945,10 @@ function RequiredRoleLimitsEditor({
       <div className="demand-header">
         <div>
           <p className="eyebrow">Omejitve vlog</p>
-          <h3>V1, V2, V3 in FMP na sektorju</h3>
+          <h3>
+            V1, V2, V3 in FMP na sektorju
+            <MetricInfo text="Omejitev sektorskih ur za vloge V1/V2/V3 in FMP" />
+          </h3>
         </div>
       </div>
       <div className="form-grid role-limits-grid">
@@ -3797,9 +3981,6 @@ function RequiredRoleLimitsEditor({
           onChange={(value) => onChange({ ...settings, fmp_sector_limit: value })}
         />
       </div>
-      <p className="demand-help">
-        Velja za obvezne vloge V1/V2/V3, FMP in fiksno vpisane ljudi s temi vlogami.
-      </p>
     </section>
   );
 }
@@ -4274,7 +4455,10 @@ function SectorIntervalEditor({
       <div className="demand-header">
         <div>
           <p className="eyebrow">Ciljna odprtost</p>
-          <h3>Intervali odprtosti</h3>
+          <h3>
+            Intervali odprtosti
+            <MetricInfo text="Osnovno število velja ves dan. Intervali ga prepišejo samo za izbrane ure; pri prekrivanju velja višja vrednost." />
+          </h3>
         </div>
         <div className="interval-summary" aria-label="Skupaj ciljnih sektorskih ur">
           <span>Cilj</span>
@@ -4354,9 +4538,6 @@ function SectorIntervalEditor({
           </button>
         ))}
       </div>
-      <p className="demand-help">
-        Interval “od 08 do 11” velja za ure 08–09, 09–10 in 10–11. Pri prekrivanju velja najvišje vpisano število sektorjev.
-      </p>
     </section>
   );
 }
@@ -4397,7 +4578,10 @@ function FixedStaffEditor({
       <div className="demand-header">
         <div>
           <p className="eyebrow">Vhodne izmene</p>
-          <h3>Fiksno vpisani ljudje</h3>
+          <h3>
+            Fiksno vpisane izmene
+            <MetricInfo text="Fiksne izmene: npr. 3 x A21 pomeni največ 3 ljudi v A21; generator jih ne dodaja čez to mejo." />
+          </h3>
         </div>
         <button className="secondary-button compact-button" onClick={addRow} type="button">
           + Dodaj
@@ -4449,7 +4633,6 @@ function FixedStaffEditor({
       ) : (
         <p className="demand-help">Ni dodatnih fiksnih izmen.</p>
       )}
-      <p className="demand-help">Vpisana izmena je ročna omejitev: npr. 3× A21 pomeni največ 3 ljudi v A21; generator jih ne doda več.</p>
     </section>
   );
 }
@@ -4468,7 +4651,10 @@ function OfficePoolEditor({
       <div className="demand-header">
         <div>
           <p className="eyebrow">Priporočilni modul</p>
-          <h3>Operativni office na voljo</h3>
+          <h3>
+            Operativni office
+            <MetricInfo text="Dodatni ljudje niso del osnovnega števila. Solver jih uporabi kot zadnji vzvod, če izboljšajo pokritost." />
+          </h3>
         </div>
         <div className="interval-summary" aria-label="Skupaj operativnih officev">
           <span>Skupaj</span>
@@ -4498,9 +4684,6 @@ function OfficePoolEditor({
           onChange={(value) => onChange({ ...pool, acs: clamp(value, 0, 80) })}
         />
       </div>
-      <p className="demand-help">
-        Ti ljudje niso del osnovnega števila; solver jih sam razporedi v A6o/A7o/... samo, če izboljšajo pokritost.
-      </p>
     </section>
   );
 }
@@ -4714,17 +4897,16 @@ function isDefaultHiddenScheduleHour(hourLabel: string): boolean {
 }
 
 function ScheduleHourLabel({ hour }: { hour: string }) {
-  const parts = hour.split(/[–-]/);
-  if (parts.length < 2) {
+  const match = hour.match(/^\s*(\d{1,2})(?:(?::|\.)00)?\s*[–-]\s*(\d{1,2})(?:(?::|\.)00)?\s*$/);
+  if (!match) {
     return <>{hour}</>;
   }
 
-  const start = parts[0]?.trim() ?? hour;
-  const end = parts.slice(1).join('–').trim();
+  const start = Number(match[1]);
+  const end = Number(match[2]);
   return (
     <span className="schedule-hour-label">
-      <span>{start}–</span>
-      <span>{end}</span>
+      <span>{start}-{end}</span>
     </span>
   );
 }
@@ -4845,7 +5027,7 @@ function SectorSchedule({
         </div>
       </div>
       <div className="schedule-scroll" aria-label="Razpored ljudi po sektorjih in urah">
-        <div className="schedule-grid" style={{ gridTemplateColumns: `92px repeat(${maxSectors}, minmax(114px, 1fr)) minmax(158px, 1.15fr)` }}>
+        <div className="schedule-grid" style={{ gridTemplateColumns: `70px repeat(${maxSectors}, minmax(124px, 1fr)) minmax(168px, 1.12fr)` }}>
           <div className="schedule-cell schedule-head sticky-col">Ura</div>
           {sectorHeaders.map((sector) => (
             <div className="schedule-cell schedule-head" key={sector}>{sector}</div>
@@ -5736,8 +5918,8 @@ function Results({
     return (
       <section className="panel error-state">
         <p className="eyebrow">Konfiguracija ni izvedljiva</p>
-        <h2>Premalo obveznih FL</h2>
-        <p>Minimalno zahtevanih FL: {result.minimum_required_fl}</p>
+        <h2>Premalo obveznih FL vlog</h2>
+        <p>Obvezne FL vloge: {result.minimum_required_fl}</p>
         {result.notes.map((note) => (
           <p key={note}>{note}</p>
         ))}
@@ -5911,18 +6093,6 @@ function Results({
           </span>
           <strong>{result.requested_sector_hours}</strong>
         </div>
-        <div className="metric-card compact-metric">
-          <span className="metric-label">
-            {baselineLabel} <MetricInfo text={baselineHelp} />
-          </span>
-          <strong>{result.baseline_min_people || '—'}</strong>
-        </div>
-        <div className="metric-card compact-metric">
-          <span className="metric-label">
-            CP-SAT SH meja <MetricInfo text={upperBoundHelp} />
-          </span>
-          <strong>{upperBoundLabel}</strong>
-        </div>
         <div className="metric-card">
           <span className="metric-label">Splaniranih ljudi</span>
           <strong>{result.planned_people}</strong>
@@ -5930,10 +6100,6 @@ function Results({
         <div className="metric-card">
           <span className="metric-label">Aktivnih na sektorju</span>
           <strong>{result.active_people}</strong>
-        </div>
-        <div className="metric-card">
-          <span className="metric-label">Minimalno obveznih FL</span>
-          <strong>{result.minimum_required_fl}</strong>
         </div>
         <div className="metric-card">
           <span className="metric-label">Manjkajoče ure</span>
@@ -5952,6 +6118,18 @@ function Results({
             Kontrolorske ure <MetricInfo text="Opravljene / možne kontrolorske ure." />
           </span>
           <strong>{result.scheduled_person_hours}/{result.total_person_capacity_hours}</strong>
+        </div>
+        <div className="metric-card compact-metric">
+          <span className="metric-label">
+            {baselineLabel} <MetricInfo text={baselineHelp} />
+          </span>
+          <strong>{result.baseline_min_people || '—'}</strong>
+        </div>
+        <div className="metric-card compact-metric">
+          <span className="metric-label">
+            CP-SAT SH meja <MetricInfo text={upperBoundHelp} />
+          </span>
+          <strong>{upperBoundLabel}</strong>
         </div>
       </section>
 
@@ -6209,6 +6387,8 @@ export default function App() {
   const [officerStaff, setOfficerStaff] = useState<OfficerStaffRow[]>(() => createOfficerRows(fallbackSettings.officer_shifts));
   const [officePool, setOfficePool] = useState<OfficePool>({ fl: 0, aps: 0, acs: 0 });
   const [includeFmp, setIncludeFmp] = useState(true);
+  const [fmpShiftMode, setFmpShiftMode] = useState<FmpShiftMode>('auto');
+  const [fmpShift, setFmpShift] = useState(DEFAULT_FMP_SHIFT);
   const [result, setResult] = useState<CalculatorResponse | null>(null);
   const [paretoResult, setParetoResult] = useState<ParetoResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -6275,6 +6455,8 @@ export default function App() {
           setOfficerStaff(savedInputs.officerStaff ?? createOfficerRows(loadedSettings.officer_shifts));
           setOfficePool(savedInputs.officePool ?? { fl: 0, aps: 0, acs: 0 });
           setIncludeFmp(savedInputs.includeFmp !== false);
+          setFmpShiftMode(savedInputs.fmpShiftMode ?? 'auto');
+          setFmpShift(savedInputs.fmpShift ?? DEFAULT_FMP_SHIFT);
         } else {
           setOfficerStaff((rows) => mergeOfficerRows(rows, loadedSettings.officer_shifts));
         }
@@ -6374,7 +6556,27 @@ export default function App() {
   );
 
   const acsCount = useMemo(() => Math.max(0, totalPeople - flCount - apsCount), [apsCount, flCount, totalPeople]);
+  const fmpShiftOptions = useMemo(() => {
+    const candidates = settings.shifts
+      .filter((shift) => shift.enabled !== false && !FMP_BLOCKED_SHIFT_CODES.has(shift.code))
+      .map((shift) => shift.code);
+    if (
+      fmpShift
+      && !FMP_BLOCKED_SHIFT_CODES.has(fmpShift)
+      && !candidates.includes(fmpShift)
+      && settings.shifts.some((shift) => shift.code === fmpShift)
+    ) {
+      candidates.push(fmpShift);
+    }
+    return candidates.length > 0 ? candidates : [DEFAULT_FMP_SHIFT];
+  }, [fmpShift, settings.shifts]);
   const minimumLicenseRatioTotal = minimumLicenseRatio.fl + minimumLicenseRatio.aps + minimumLicenseRatio.acs;
+
+  useEffect(() => {
+    if (!fmpShiftOptions.includes(fmpShift)) {
+      setFmpShift(DEFAULT_FMP_SHIFT);
+    }
+  }, [fmpShift, fmpShiftOptions]);
 
   const updateCounts = (nextTotal: number, nextFl: number, nextAps: number) => {
     const safeTotal = clamp(nextTotal, 1, 80);
@@ -6434,6 +6636,8 @@ export default function App() {
         officerStaff: mergeOfficerRows(officerStaff, settings.officer_shifts),
         officePool,
         includeFmp,
+        fmpShiftMode,
+        fmpShift,
       };
       window.localStorage.setItem(savedCalculatorInputsStorageKey, JSON.stringify(payload));
       window.localStorage.setItem(savedSettingsStorageKey, JSON.stringify(settings));
@@ -6604,6 +6808,57 @@ export default function App() {
     }
   }, [loadParetoJobResult, stopParetoPolling]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    getCalculationJobs()
+      .then((jobs) => {
+        if (cancelled) {
+          return;
+        }
+        const activeCalculatorJob = jobs.find(
+          (job) => job.kind !== 'pareto' && (job.status === 'running' || job.status === 'queued'),
+        );
+        if (activeCalculatorJob && !activeJobIdRef.current) {
+          activeJobIdRef.current = activeCalculatorJob.job_id;
+          setIsLoading(true);
+          setJobStatus(activeCalculatorJob);
+          setCalculationProgress(activeCalculatorJob.progress);
+          bestResultVersionRef.current = Math.max(bestResultVersionRef.current, activeCalculatorJob.best_result_version);
+          if (pollingTimerRef.current === null) {
+            pollingTimerRef.current = window.setInterval(() => {
+              void pollJobStatus(activeCalculatorJob.job_id);
+            }, 2000);
+          }
+          void pollJobStatus(activeCalculatorJob.job_id);
+        }
+
+        const activeParetoJob = jobs.find(
+          (job) => job.kind === 'pareto' && (job.status === 'running' || job.status === 'queued'),
+        );
+        if (activeParetoJob && !activeParetoJobIdRef.current) {
+          activeParetoJobIdRef.current = activeParetoJob.job_id;
+          setIsParetoLoading(true);
+          setParetoJobStatus(activeParetoJob);
+          setParetoProgress(activeParetoJob.progress);
+          paretoResultVersionRef.current = Math.max(paretoResultVersionRef.current, activeParetoJob.best_result_version);
+          if (paretoPollingTimerRef.current === null) {
+            paretoPollingTimerRef.current = window.setInterval(() => {
+              void pollParetoJobStatus(activeParetoJob.job_id);
+            }, 2000);
+          }
+          void pollParetoJobStatus(activeParetoJob.job_id);
+        }
+      })
+      .catch(() => {
+        // If the local engine is still starting, the normal explicit calculation flow remains available.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [pollJobStatus, pollParetoJobStatus]);
+
   const buildRequestPayload = useCallback((): CalculatorRequest => {
     const activeRegularShiftCodes = activeShiftCodes(settings.shifts);
     const activeOfficerShiftCodes = activeShiftCodes(settings.officer_shifts);
@@ -6631,6 +6886,8 @@ export default function App() {
       aps_count: isDemandMode ? 0 : apsCount,
       acs_count: isDemandMode ? 0 : acsCount,
       include_fmp: includeFmp,
+      fmp_shift_mode: fmpShiftMode,
+      fmp_shift: fmpShiftOptions.includes(fmpShift) ? fmpShift : DEFAULT_FMP_SHIFT,
       settings,
       requested_sector_counts: effectiveSectorDemand,
       fixed_staff: fixedStaffPayload,
@@ -6642,9 +6899,11 @@ export default function App() {
       prefer_minimal_fl: preferMinimalFl,
       office_fallback_mode: 'auto',
       preferred_manual_configuration_id: manualSeedConfigId,
+      warm_start: null,
+      warm_start_snapshot_id: null,
     };
     return payload;
-  }, [acsCount, apsCount, calculationMode, effectiveSectorDemand, fixedStaff, flCount, includeFmp, manualSeedConfigId, minimumLicenseRatio, officePool, officerStaff, preferMinimalFl, settings, totalPeople, usePeopleLimit]);
+  }, [acsCount, apsCount, calculationMode, effectiveSectorDemand, fixedStaff, flCount, fmpShift, fmpShiftMode, fmpShiftOptions, includeFmp, manualSeedConfigId, minimumLicenseRatio, officePool, officerStaff, preferMinimalFl, settings, totalPeople, usePeopleLimit]);
 
   const startJobWithProgress = async ({
     startJob,
@@ -6933,6 +7192,8 @@ export default function App() {
       aps_count: configuration.license_counts.APS,
       acs_count: configuration.license_counts.ACS,
       include_fmp: false,
+      fmp_shift_mode: 'fixed',
+      fmp_shift: DEFAULT_FMP_SHIFT,
       settings: manualSettings,
       requested_sector_counts: requestedSectorCounts,
       fixed_staff: filterFixedStaffForActiveShifts(configuration.fixed_staff, manualSettings),
@@ -7150,7 +7411,7 @@ export default function App() {
     try {
       const job = await startParetoJob(payload);
       activeParetoJobIdRef.current = job.job_id;
-      setParetoJobStatus(createQueuedJobStatus(job.job_id));
+      setParetoJobStatus(createQueuedJobStatus(job.job_id, 'pareto'));
       paretoPollingTimerRef.current = window.setInterval(() => {
         void pollParetoJobStatus(job.job_id);
       }, 2000);
@@ -7239,21 +7500,33 @@ export default function App() {
 
     if (plan.kind === 'calculator') {
       const extraSeconds = Math.max(60, plan.payload.settings.cp_sat_time_limit_seconds);
-      const payload = clonePayloadForRegularContinuation(plan.payload, extraSeconds);
-      setWhatIfSummary(`Nadaljevanje redne faze +${extraSeconds} s brez operativnega office fallbacka`);
+      const warmStartResult = timeLimitDecision.currentResult ?? result;
+      const warmStartSnapshotId = timeLimitDecision.status.warm_start_snapshot_id;
+      const payload = clonePayloadForRegularContinuation(plan.payload, extraSeconds, warmStartResult, warmStartSnapshotId);
+      setWhatIfSummary(
+        warmStartSnapshotId || warmStartResult
+          ? `Nadaljevanje redne faze +${extraSeconds} s iz začasne najboljše rešitve`
+          : `Nadaljevanje redne faze +${extraSeconds} s brez operativnega office fallbacka`,
+      );
       await startCalculationFromPayload(payload, false);
       return;
     }
 
     if (plan.kind === 'complete') {
       const extraSeconds = Math.max(60, plan.payload.settings.cp_sat_time_limit_seconds);
-      const payload = clonePayloadForRegularContinuation(plan.payload, extraSeconds);
+      const warmStartResult = timeLimitDecision.currentResult ?? result ?? plan.currentResult;
+      const warmStartSnapshotId = timeLimitDecision.status.warm_start_snapshot_id;
+      const payload = clonePayloadForRegularContinuation(plan.payload, extraSeconds, warmStartResult, warmStartSnapshotId);
       const nextTimeLimit = Math.min(120, plan.timeLimitSeconds + Math.max(8, plan.timeLimitSeconds));
-      setWhatIfSummary(`Nadaljevanje dopolnitve +${extraSeconds} s brez operativnega office fallbacka`);
+      setWhatIfSummary(
+        warmStartSnapshotId || warmStartResult
+          ? `Nadaljevanje dopolnitve +${extraSeconds} s iz začasne najboljše rešitve`
+          : `Nadaljevanje dopolnitve +${extraSeconds} s brez operativnega office fallbacka`,
+      );
       await startJobWithProgress({
         startJob: () => startCompleteConfigurationJob({
           request: payload,
-          current_result: plan.currentResult,
+          current_result: warmStartResult,
           time_limit_seconds: nextTimeLimit,
         }),
         clearResult: false,
@@ -7284,7 +7557,7 @@ export default function App() {
     });
   };
 
-  const tryOfficeFallbackAfterTimeLimit = async (officePoolOverride?: OfficePool) => {
+  const tryOfficeFallbackAfterTimeLimit = async (officeSelection: OfficeFallbackSelection) => {
     if (!timeLimitDecision) {
       return;
     }
@@ -7293,8 +7566,9 @@ export default function App() {
       return;
     }
     const warmStartResult = timeLimitDecision.currentResult ?? result;
-    const payload = clonePayloadForOfficeFallback(plan.payload, officePoolOverride, warmStartResult);
-    if (!hasOfficePool(payload)) {
+    const warmStartSnapshotId = timeLimitDecision.status.warm_start_snapshot_id;
+    const payload = clonePayloadForOfficeFallback(plan.payload, officeSelection, warmStartResult, warmStartSnapshotId);
+    if (!hasOfficeFallbackSelection(officeSelection)) {
       setTimeLimitDecision(null);
       setError('Office fallback ni na voljo, ker ni vpisan noben operativni office.');
       return;
@@ -7302,7 +7576,11 @@ export default function App() {
     setTimeLimitDecision(null);
 
     if (plan.kind === 'complete') {
-      setWhatIfSummary('Dopolnitev: takojšnji preizkus operativnega office fallbacka');
+      setWhatIfSummary(
+        officeSelection.mode === 'fixed'
+          ? `Dopolnitev: izbrana office izmena ${officeSelection.shift}`
+          : 'Dopolnitev: takojšnji preizkus operativnega office fallbacka',
+      );
       await startJobWithProgress({
         startJob: () => startCompleteConfigurationJob({
           request: payload,
@@ -7322,9 +7600,11 @@ export default function App() {
     }
 
     setWhatIfSummary(
-      warmStartResult
-        ? 'Office fallback iz trenutno najboljše rešitve'
-        : 'Takojšnji preizkus operativnega office fallbacka',
+      officeSelection.mode === 'fixed'
+        ? `Office nadaljevanje z izmeno ${officeSelection.shift} in prostim premešanjem`
+        : warmStartSnapshotId || warmStartResult
+          ? 'Office fallback iz začasne najboljše rešitve'
+          : 'Takojšnji preizkus operativnega office fallbacka',
     );
     await startCalculationFromPayload(payload, false);
   };
@@ -7469,26 +7749,21 @@ export default function App() {
         <div className={`workspace ${result || paretoResult ? 'workspace-has-output' : ''}`}>
           <section className="panel form-panel">
             <div className="form-panel-top">
-              <p className="eyebrow">Vhodni podatki</p>
-              <h2>
-                {calculationMode === 'staff_to_coverage'
-                  ? 'Dnevna sestava ljudi'
-                  : 'Želena odprtost sektorjev'}
-              </h2>
+              <h2>Vhodni podatki</h2>
               <div className="mode-switch">
                 <button
                   className={calculationMode === 'staff_to_coverage' ? 'active' : ''}
                   onClick={() => setCalculationMode('staff_to_coverage')}
                   type="button"
                 >
-                  1. Iz ljudi
+                  1. Število ljudi
                 </button>
                 <button
                   className={calculationMode === 'demand_to_staff' ? 'active' : ''}
                   onClick={() => setCalculationMode('demand_to_staff')}
                   type="button"
                 >
-                  2. Iz odprtosti
+                  2. Odprtost sektorjev
                 </button>
               </div>
               <div className="calculator-default-row">
@@ -7500,7 +7775,7 @@ export default function App() {
                     ? 'Shranjeno'
                     : calculatorInputsSaveState === 'failed'
                       ? 'Shranjevanje ni uspelo'
-                      : 'Shrani trenutno vpisane številke za naslednji zagon'}
+                      : 'Za naslednji zagon'}
                 </span>
               </div>
             </div>
@@ -7545,9 +7820,9 @@ export default function App() {
                     <h3>Licence in limit ljudi</h3>
                   </div>
                 </div>
-                <p className="demand-help">
-                  FL/APS/ACS so v tem načinu odstotki oziroma mehko ciljno razmerje. Če limit ljudi ni vklopljen,
-                  solver išče najmanjšo zasedbo; če je vklopljen, išče najboljšo rešitev znotraj tega limita.
+                <p className="demand-help compact-help">
+                  Vpiši ciljno razmerje licenc; limit ljudi je opcijski.
+                  <MetricInfo text="Če limit ni vklopljen, solver išče najmanjšo zasedbo. Če je vklopljen, išče najboljšo rešitev znotraj limita." />
                 </p>
                 <label className="check-row">
                   <input
@@ -7604,6 +7879,50 @@ export default function App() {
               </section>
             ) : null}
 
+            <section className="fmp-row fmp-control">
+              <label className="check-row">
+                <input type="checkbox" checked={includeFmp} onChange={(event) => setIncludeFmp(event.target.checked)} />
+                <span>
+                  Vključi FMP
+                  <MetricInfo text="Konfiguracija z vključenim FMP" />
+                </span>
+              </label>
+              {includeFmp ? (
+                <div className="fmp-options">
+                  <div className="mode-switch fmp-mode-switch" role="group" aria-label="Način FMP izmene">
+                    <button
+                      className={fmpShiftMode === 'auto' ? 'active' : ''}
+                      onClick={() => setFmpShiftMode('auto')}
+                      type="button"
+                    >
+                      Poišči najboljšo
+                    </button>
+                    <button
+                      className={fmpShiftMode === 'fixed' ? 'active' : ''}
+                      onClick={() => setFmpShiftMode('fixed')}
+                      type="button"
+                    >
+                      Fiksna izmena
+                    </button>
+                  </div>
+                  {fmpShiftMode === 'fixed' ? (
+                    <label className="field fmp-shift-field">
+                      FMP izmena
+                      <select value={fmpShift} onChange={(event) => setFmpShift(event.target.value)}>
+                        {fmpShiftOptions.map((shift) => (
+                          <option key={shift} value={shift}>{shift}</option>
+                        ))}
+                      </select>
+                      <small>Ročno določena FMP izmena.</small>
+                    </label>
+                  ) : (
+                    <p className="fmp-help">
+                      Auto izbere najboljšo aktivno FMP izmeno med {FMP_AUTO_SHIFT_CODES.join(', ')}.
+                    </p>
+                  )}
+                </div>
+              ) : null}
+            </section>
             <FixedStaffEditor rows={fixedStaff} shifts={settings.shifts} onChange={setFixedStaff} />
             <OfficePoolEditor pool={officePool} onChange={setOfficePool} />
             <OfficerStaffEditor
@@ -7699,6 +8018,11 @@ export default function App() {
                     ) : null}
                   </div>
                   {activeDemandLabel ? <div className="queue-active">Aktivno: {activeDemandLabel}</div> : null}
+                  {isLoading && jobStatus ? (
+                    <div className="queue-active">
+                      Trenutni izračun: {jobStatusLabels[jobStatus.status]} · {jobStatus.progress}% · {formatProgressMessage(jobStatus)}
+                    </div>
+                  ) : null}
                   {sectorDemandQueue.length > 0 ? (
                     <div className="queue-list">
                       {sectorDemandQueue.map((item) => (
@@ -7735,10 +8059,6 @@ export default function App() {
                 />
               </>
             )}
-            <label className="check-row fmp-row">
-              <input type="checkbox" checked={includeFmp} onChange={(event) => setIncludeFmp(event.target.checked)} />
-              <span>Vključi FMP kot A9/FL. FMP se uporabi na sektorju samo, če je koristno.</span>
-            </label>
             {isLoading ? (
               <div className="calculation-progress" role="status" aria-live="polite">
                 <div className="progress-row">
