@@ -1,6 +1,11 @@
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
+DEFAULT_INCLUDE_NIGHT_FL_REQUIREMENT = True
+DEFAULT_EXTRA_NIGHT_A21_FL_COUNT = 3
+DEFAULT_REQUIRED_NIGHT_FL_COUNT = DEFAULT_EXTRA_NIGHT_A21_FL_COUNT + 1
+
+
 class ShiftRule(BaseModel):
     code: str
     start_hour: int = Field(ge=0, le=23)
@@ -17,8 +22,8 @@ class CalculatorSettings(BaseModel):
     cp_sat_acceptable_sector_gap: int = Field(default=0, ge=0, le=100)
     cp_sat_min_auto_stop_coverage_percent: int = Field(default=95, ge=0, le=100)
     include_required_shift_leaders: bool = True
-    include_night_fl_requirement: bool = True
-    required_night_fl_count: int = Field(default=4, ge=0, le=10)
+    include_night_fl_requirement: bool = DEFAULT_INCLUDE_NIGHT_FL_REQUIREMENT
+    required_night_fl_count: int = Field(default=DEFAULT_REQUIRED_NIGHT_FL_COUNT, ge=0, le=10)
     v1_sector_limit: int = Field(default=1, ge=0, le=24)
     v2_sector_limit: int = Field(default=1, ge=0, le=24)
     v3_sector_limit: int = Field(default=4, ge=0, le=24)
@@ -136,6 +141,10 @@ class CalculatorRequest(BaseModel):
     include_pareto: bool = False
     prefer_minimal_fl: bool = False
     office_fallback_mode: str = "auto"
+    leader_exception_mode: str = "forbid"
+    max_leader_exception_hours: int = Field(default=0, ge=0, le=48)
+    continuation_min_sector_hours: int | None = Field(default=None, ge=0, le=192)
+    solver_random_seed: int = Field(default=1, ge=1, le=2_147_483_647)
     preferred_manual_configuration_id: str | None = None
     warm_start: dict[str, object] | None = None
     warm_start_snapshot_id: str | None = None
@@ -168,6 +177,10 @@ class CalculatorRequest(BaseModel):
             raise ValueError("Neznan način izračuna.")
         if self.office_fallback_mode not in {"auto", "disabled", "force"}:
             raise ValueError("Način office fallback mora biti auto, disabled ali force.")
+        if self.leader_exception_mode not in {"forbid", "allow"}:
+            raise ValueError("Način kriznih VI/FMP izjem mora biti forbid ali allow.")
+        if self.leader_exception_mode == "forbid" and self.max_leader_exception_hours != 0:
+            raise ValueError("Pri prepovedanih VI/FMP izjemah mora biti največ kriznih ur 0.")
         if self.fmp_shift_mode not in {"auto", "fixed"}:
             raise ValueError("Način FMP izmene mora biti auto ali fixed.")
         if self.calculation_mode == "staff_to_coverage" and self.total_people < 1:
@@ -272,6 +285,9 @@ class CalculatorResponse(BaseModel):
     solver_solution_count: int = 0
     solver_optimality_gap_percent: float | None = None
     solver_stop_reason: str | None = None
+    leader_edge_exception_hours: int = 0
+    fmp_vi_overlap_hours: int = 0
+    crisis_exception_hours: int = 0
     missing_sector_hours: int = 0
     baseline_min_people: int = 0
     baseline_min_people_formula: str | None = None

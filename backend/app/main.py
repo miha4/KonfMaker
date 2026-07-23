@@ -17,11 +17,13 @@ from .config_library import (
     manual_configuration_one_down,
     save_user_configuration,
 )
+from .future_calculator import FutureCalculatorRequest, calculate_future_sector_hours
 from .jobs import (
     JobNotFoundError,
     cancel_job,
     create_calculation_job,
     create_complete_configuration_job,
+    create_future_calculation_job,
     create_one_down_job,
     create_pareto_job,
     get_job_result,
@@ -32,6 +34,8 @@ from .models import (
     CalculatorRequest,
     CompareConfigurationRequest,
     CompleteConfigurationRequest,
+    DEFAULT_INCLUDE_NIGHT_FL_REQUIREMENT,
+    DEFAULT_REQUIRED_NIGHT_FL_COUNT,
     ManualConfigurationOneDownRequest,
     SaveUserConfigurationRequest,
 )
@@ -77,8 +81,8 @@ def default_settings() -> dict[str, object]:
         "cp_sat_acceptable_sector_gap": 0,
         "cp_sat_min_auto_stop_coverage_percent": 95,
         "include_required_shift_leaders": True,
-        "include_night_fl_requirement": True,
-        "required_night_fl_count": 4,
+        "include_night_fl_requirement": DEFAULT_INCLUDE_NIGHT_FL_REQUIREMENT,
+        "required_night_fl_count": DEFAULT_REQUIRED_NIGHT_FL_COUNT,
         "v1_sector_limit": 1,
         "v2_sector_limit": 1,
         "v3_sector_limit": 4,
@@ -91,6 +95,11 @@ def default_settings() -> dict[str, object]:
 @app.post("/api/calculate-sector-hours")
 def calculate_sector_hours(request: CalculatorRequest):
     return calculate(request)
+
+
+@app.post("/api/future-calculator")
+def future_calculator(request: FutureCalculatorRequest):
+    return calculate_future_sector_hours(request)
 
 
 @app.post("/api/complete-configuration")
@@ -122,6 +131,8 @@ def create_user_configuration(request: SaveUserConfigurationRequest) -> dict[str
         return save_user_configuration(request)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Shranjevanje uporabniške konfiguracije ni uspelo: {exc}") from exc
 
 
 @app.post("/api/manual-configurations/compare-result")
@@ -214,6 +225,11 @@ def export_uploaded_model_analysis(request: WorkbookPayload):
 @app.post("/api/jobs/calculate-sector-hours")
 def start_calculation_job(request: CalculatorRequest) -> dict[str, str]:
     return create_calculation_job(request)
+
+
+@app.post("/api/jobs/future-calculator")
+def start_future_calculation_job(request: FutureCalculatorRequest) -> dict[str, str]:
+    return create_future_calculation_job(request)
 
 
 @app.post("/api/jobs/complete-configuration")

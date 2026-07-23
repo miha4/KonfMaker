@@ -1,5 +1,6 @@
 import { type ChangeEvent, useMemo, useState } from 'react';
 import { exportModelAnalysis, inspectModelWorkbook, runModelAnalysis } from './api/analysis';
+import { preventNumberInputArrowStep } from './numberInput';
 import type {
   AnalysisMapping,
   AnalysisMetricSet,
@@ -264,6 +265,7 @@ function NumberInput({
         max={max}
         step={step}
         value={value}
+        onKeyDown={preventNumberInputArrowStep}
         onChange={(event) => onChange(Number(event.target.value))}
       />
       {helper ? <small>{helper}</small> : null}
@@ -591,202 +593,6 @@ function HourlyErrorTable({ result }: { result: AnalysisResult }) {
   );
 }
 
-function ForecastDayPicker({
-  result,
-  onUseSectorDemand,
-}: {
-  result: AnalysisResult;
-  onUseSectorDemand?: (values: number[], label: string) => void;
-}) {
-  const [selectedDate, setSelectedDate] = useState(result.forecast_days[0]?.date ?? '');
-  const selectedDay = result.forecast_days.find((day) => day.date === selectedDate) ?? result.forecast_days[0] ?? null;
-  const thresholdText = selectedDay
-    ? Object.entries(selectedDay.thresholds)
-      .sort(([left], [right]) => Number(left) - Number(right))
-      .map(([sector, value]) => `${sector}S=${formatNumber(value, 3)}`)
-      .join(' · ')
-    : '';
-  const rows = [
-    ['Datum', 'Dan', 'Preleti', 'Prometni cilj', 'B', 'k', 'Hibrid SH', 'Fatigue SH', 'Napoved SH', 'Formula'],
-    ...result.forecast_days.map((day) => [
-      day.date,
-      day.weekday,
-      day.flights,
-      day.traffic_target,
-      day.base_profile_sum,
-      day.calibration_factor,
-      day.hybrid_sector_hours,
-      day.fatigue_required_sector_hours,
-      day.predicted_sector_hours,
-      day.formula,
-    ]),
-  ];
-
-  if (!selectedDay) {
-    return null;
-  }
-
-  return (
-    <section className="panel analysis-results-panel">
-      <div className="panel-header compact">
-        <div>
-          <p className="eyebrow">Dnevna napoved</p>
-          <h2>Uporaba v kalkulatorju</h2>
-        </div>
-        <CopyTableButton rows={rows} />
-      </div>
-      <div className="forecast-action-row">
-        <label className="field">
-          <span>Dan za kalkulator</span>
-          <select value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)}>
-            {result.forecast_days.map((day) => (
-              <option value={day.date} key={day.date}>
-                {day.date} · {day.weekday} · {formatNumber(day.predicted_sector_hours, 0)} SH
-              </option>
-            ))}
-          </select>
-        </label>
-        <button
-          className="primary-button"
-          disabled={!onUseSectorDemand}
-          onClick={() => onUseSectorDemand?.(
-            selectedDay.hourly_for_calculator,
-            `${selectedDay.date} ${selectedDay.weekday}`,
-          )}
-          type="button"
-        >
-          Uporabi v kalkulatorju
-        </button>
-      </div>
-      <div className="formula-box">
-        <span>Formula za izbrani dan</span>
-        <strong>{selectedDay.formula}</strong>
-      </div>
-      <div className="formula-box">
-        <span>Hibrid / obremenitev</span>
-        <strong>
-          Hibrid {formatNumber(selectedDay.hybrid_sector_hours, 0)} SH · fatigue cilj {formatNumber(selectedDay.fatigue_required_sector_hours, 0)} SH
-        </strong>
-      </div>
-      <div className="formula-grid">
-        <div className="formula-box">
-          <span>B: vsota zgodovinskega profila</span>
-          <strong>{formatNumber(selectedDay.base_profile_sum, 3)} SH podnevi</strong>
-        </div>
-        <div className="formula-box">
-          <span>k: razteg profila</span>
-          <strong>{formatNumber(selectedDay.calibration_factor, 5)}</strong>
-        </div>
-        <div className="formula-box">
-          <span>Z: P × k proti pragovom</span>
-          <strong>{thresholdText}</strong>
-        </div>
-      </div>
-      <div className="responsive-table explain-hour-table">
-        <table>
-          <thead>
-            <tr>
-              <th>Ura</th>
-              <th>P profil</th>
-              <th>Z</th>
-              <th>Hibrid</th>
-              <th>Final</th>
-              <th>Realno</th>
-            </tr>
-          </thead>
-          <tbody>
-            {selectedDay.explain_hours.map((hour) => (
-              <tr key={`${selectedDay.date}-${hour.hour}`}>
-                <td className="strong">{hour.hour}</td>
-                <td>{formatNumber(hour.profile, 3)}</td>
-                <td>{formatNumber(hour.z, 3)}</td>
-                <td>{hour.hybrid_sector}</td>
-                <td>{hour.final_sector}</td>
-                <td>{formatNumber(hour.actual_sector, 0)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <div className="hour-chip-row">
-        {selectedDay.hourly_for_calculator.map((value, index) => (
-          <span key={`${selectedDay.date}-${index}`}>
-            {(7 + index) % 24}:00 · {value}
-          </span>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function ForecastHeatmap({ result }: { result: AnalysisResult }) {
-  const displayHours = useMemo(buildForecastDisplayHours, []);
-  const rows = useMemo(
-    () => [
-      ['Datum', 'Dan', 'SH', ...displayHours.map((hour) => hour.label)],
-      ...result.forecast_days.map((day) => [
-        day.date,
-        day.weekday,
-        day.predicted_sector_hours,
-        ...displayHours.map((hour) => day.hourly_for_calculator[hour.index] ?? ''),
-      ]),
-    ],
-    [displayHours, result.forecast_days],
-  );
-
-  return (
-    <section className="panel analysis-results-panel">
-      <div className="panel-header compact">
-        <div>
-          <p className="eyebrow">Heatmap</p>
-          <h2>Napoved odprtosti po urah</h2>
-        </div>
-        <CopyTableButton rows={rows} />
-      </div>
-      <div className="heatmap-legend" aria-label="Legenda odprtosti sektorjev">
-        {[0, 1, 2, 3, 4, 5].map((level) => (
-          <span className={`heatmap-cell heatmap-level-${level}`} key={level}>{level}</span>
-        ))}
-      </div>
-      <div className="forecast-heatmap-scroll">
-        <div
-          className="forecast-heatmap-grid"
-          style={{ gridTemplateColumns: `112px 48px 58px repeat(${displayHours.length}, 34px)` }}
-          role="table"
-        >
-          <div className="heatmap-header sticky-heatmap-col" role="columnheader">Datum</div>
-          <div className="heatmap-header" role="columnheader">Dan</div>
-          <div className="heatmap-header" role="columnheader">SH</div>
-          {displayHours.map((hour) => (
-            <div className="heatmap-header" role="columnheader" key={hour.label}>{hour.label.replace(':00', '')}</div>
-          ))}
-          {result.forecast_days.map((day) => (
-            <div className="heatmap-row-fragment" role="row" key={day.date}>
-              <div className="heatmap-label sticky-heatmap-col" role="cell">{day.date}</div>
-              <div className="heatmap-label" role="cell">{day.weekday}</div>
-              <div className="heatmap-label" role="cell">{day.predicted_sector_hours}</div>
-              {displayHours.map((hour) => {
-                const value = day.hourly_for_calculator[hour.index] ?? 0;
-                const level = Math.max(0, Math.min(5, Math.round(value)));
-                return (
-                  <div
-                    className={`heatmap-cell heatmap-level-${level}`}
-                    role="cell"
-                    title={`${day.date} ${hour.label} · ${value} sektorjev`}
-                    key={`${day.date}-${hour.index}`}
-                  >
-                    {value}
-                  </div>
-                );
-              })}
-            </div>
-          ))}
-        </div>
-      </div>
-    </section>
-  );
-}
-
 function DailyForecastTable({
   result,
   onUseSectorDemand,
@@ -796,7 +602,7 @@ function DailyForecastTable({
   onUseSectorDemand?: (values: number[], label: string) => void;
   onQueueSectorDemand?: (items: SectorDemandQueueDraft[]) => void;
 }) {
-  const displayHours = useMemo(buildForecastDisplayHours, []);
+  const displayHours = useMemo(() => buildForecastDisplayHours(), []);
   const [selectedDate, setSelectedDate] = useState(result.forecast_days[0]?.date ?? '');
   const selectedDay = result.forecast_days.find((day) => day.date === selectedDate) ?? result.forecast_days[0] ?? null;
   const rows = useMemo(
@@ -1841,6 +1647,7 @@ export default function ModelAnalysis({
                 type="number"
                 step={0.1}
                 value={params.intercept_override ?? ''}
+                onKeyDown={preventNumberInputArrowStep}
                 placeholder="auto"
                 onChange={(event) => setParams({ ...params, intercept_override: toNullableNumber(event.target.value) })}
               />
@@ -1851,6 +1658,7 @@ export default function ModelAnalysis({
                 type="number"
                 step={0.0001}
                 value={params.coefficient_override ?? ''}
+                onKeyDown={preventNumberInputArrowStep}
                 placeholder="auto"
                 onChange={(event) => setParams({ ...params, coefficient_override: toNullableNumber(event.target.value) })}
               />
@@ -2017,6 +1825,7 @@ export default function ModelAnalysis({
                   type="number"
                   step={0.001}
                   value={params.weekday_adjustment_overrides[weekday] ?? ''}
+                  onKeyDown={preventNumberInputArrowStep}
                   placeholder={weekday === 'PO' ? '0' : 'auto'}
                   onChange={(event) => updateWeekdayOverride(weekday, optionalNumber(event.target.value))}
                 />
@@ -2031,6 +1840,7 @@ export default function ModelAnalysis({
                   type="number"
                   step={0.25}
                   value={params.weekday_buffers[weekday] ?? 0}
+                  onKeyDown={preventNumberInputArrowStep}
                   onChange={(event) => updateWeekdayBuffer(weekday, Number(event.target.value))}
                 />
               </label>

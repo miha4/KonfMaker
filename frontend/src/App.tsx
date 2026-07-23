@@ -21,6 +21,21 @@ import {
   startParetoJob,
 } from './api/calculator';
 import ModelAnalysis from './ModelAnalysis';
+import FutureCalculator from './FutureCalculator';
+import {
+  cancellationDetail as cancellationDetailFor,
+  isCancellationInProgress,
+  type CalculationCancelAction,
+} from './calculationUi';
+import {
+  continuationDelta,
+  coverageIsProven,
+  resultUsesOffice,
+  stoppedOnTimeLimit,
+  suggestedEmergencyShift,
+  suggestedOfficeLicense,
+} from './continuationUi';
+import { preventNumberInputArrowStep } from './numberInput';
 import type {
   CalculationJobStart,
   CalculationJobStatus,
@@ -111,7 +126,7 @@ const fallbackSettings: CalculatorSettings = {
 const savedSettingsStorageKey = 'konfmaker.calculatorSettings.v1';
 const savedCalculatorInputsStorageKey = 'konfmaker.calculatorInputs.v1';
 
-type Tab = 'calculator' | 'settings' | 'manual-configs' | 'comparison' | 'analysis' | 'theory';
+type Tab = 'calculator' | 'future' | 'settings' | 'manual-configs' | 'comparison' | 'analysis' | 'theory';
 type CalculationMode = 'staff_to_coverage' | 'demand_to_staff';
 type PollingTimer = ReturnType<typeof window.setInterval>;
 type SectorDemandInterval = {
@@ -187,6 +202,11 @@ type TimeLimitDecision = {
   restartPlan: JobRestartPlan;
   currentResult: CalculatorResponse | null;
   reason: 'time-limit' | 'manual-stop';
+};
+type ContinuationComparison = {
+  actionLabel: string;
+  baseline: CalculatorResponse;
+  restartPlan: JobRestartPlan;
 };
 type WorkerColor = {
   background: string;
@@ -659,6 +679,7 @@ function createQueuedJobStatus(jobId: string, kind = 'calculation'): Calculation
     message: 'Čaka v vrsti za izračun.',
     elapsed_seconds: 0,
     error: null,
+    cancel_requested: false,
     best_result_available: false,
     best_result_version: 0,
     best_max_sector_hours: null,
@@ -706,6 +727,10 @@ function formatBestResultSummary(status: CalculationJobStatus): string | null {
     `${status.best_planned_people ?? 0} ljudi`,
     `${status.best_utilization_percent ?? 0}% izkoriščenost`,
   ].join(' | ');
+}
+
+function defaultUserConfigurationName(result: CalculatorResponse): string {
+  return `User ${result.planned_people}p ${result.max_sector_hours}SH`;
 }
 
 function formatProgressMessage(status: CalculationJobStatus): string {
@@ -836,16 +861,13 @@ function hasOfficeFallbackSelection(selection: OfficeFallbackSelection): boolean
 }
 
 function statusNeedsTimeLimitDecision(status: CalculationJobStatus, restartPlan: JobRestartPlan | null): boolean {
-  if (status.status !== 'finished' || restartPlan === null || !status.solver_stop_reason) {
-    return false;
-  }
-  if (!status.solver_stop_reason.includes('časovni limit CP-SAT faze')) {
+  if (status.status !== 'finished' || restartPlan === null) {
     return false;
   }
   if ((status.best_missing_sector_hours ?? 0) <= 0) {
     return false;
   }
-  return true;
+  return Boolean(status.solver_status || status.solver_stop_reason);
 }
 
 function warmStartFromResult(result?: CalculatorResponse | null): CalculatorRequest['warm_start'] {
@@ -883,10 +905,56 @@ function clonePayloadForRegularContinuation(
   return {
     ...payload,
     office_fallback_mode: 'disabled',
+    continuation_min_sector_hours: Math.max(
+      payload.continuation_min_sector_hours ?? 0,
+      warmStartResult?.max_sector_hours ?? 0,
+    ),
+    solver_random_seed: Math.min(2_147_483_647, (payload.solver_random_seed ?? 1) + 1),
     ...warmStartContinuationFields(warmStartResult, warmStartSnapshotId),
     settings: {
       ...payload.settings,
-      cp_sat_time_limit_seconds: Math.min(3600, payload.settings.cp_sat_time_limit_seconds + extraSeconds),
+      cp_sat_time_limit_seconds: Math.min(3600, extraSeconds),
+    },
+  };
+}
+
+function clonePayloadForLeaderCrisis(
+  payload: CalculatorRequest,
+  maxExceptionHours: number,
+  warmStartResult?: CalculatorResponse | null,
+  warmStartSnapshotId?: string | null,
+): CalculatorRequest {
+  return {
+    ...clonePayloadForRegularContinuation(
+      payload,
+      Math.min(300, payload.settings.cp_sat_time_limit_seconds),
+      warmStartResult,
+      warmStartSnapshotId,
+    ),
+    leader_exception_mode: 'allow',
+    max_leader_exception_hours: clamp(maxExceptionHours, 1, 48),
+  };
+}
+
+function clonePayloadForEmergencyShift(
+  payload: CalculatorRequest,
+  shiftCode: string,
+  warmStartResult?: CalculatorResponse | null,
+  warmStartSnapshotId?: string | null,
+): CalculatorRequest {
+  return {
+    ...clonePayloadForRegularContinuation(
+      payload,
+      Math.min(300, payload.settings.cp_sat_time_limit_seconds),
+      warmStartResult,
+      warmStartSnapshotId,
+    ),
+    settings: {
+      ...payload.settings,
+      cp_sat_time_limit_seconds: Math.min(300, payload.settings.cp_sat_time_limit_seconds),
+      shifts: payload.settings.shifts.map((shift) => (
+        shift.code === shiftCode ? { ...shift, enabled: true } : shift
+      )),
     },
   };
 }
@@ -967,9 +1035,15 @@ function clonePayloadForOfficeFallback(
       officer_staff: mergeOfficerStaffRules([...payload.officer_staff, ...fixedOfficeRules]),
       office_pool: [],
       office_fallback_mode: 'disabled',
+      continuation_min_sector_hours: Math.max(
+        payload.continuation_min_sector_hours ?? 0,
+        warmStartResult?.max_sector_hours ?? 0,
+      ),
+      solver_random_seed: Math.min(2_147_483_647, (payload.solver_random_seed ?? 1) + 1),
       ...warmStartContinuationFields(warmStartResult, warmStartSnapshotId),
       settings: {
         ...payload.settings,
+        cp_sat_time_limit_seconds: Math.min(300, payload.settings.cp_sat_time_limit_seconds),
         cp_sat_no_improvement_seconds: Math.min(payload.settings.cp_sat_no_improvement_seconds || 60, 60),
       },
     };
@@ -984,9 +1058,15 @@ function clonePayloadForOfficeFallback(
     locked_staff: payload.locked_staff,
     office_pool: overrideRules,
     office_fallback_mode: 'force',
+    continuation_min_sector_hours: Math.max(
+      payload.continuation_min_sector_hours ?? 0,
+      warmStartResult?.max_sector_hours ?? 0,
+    ),
+    solver_random_seed: Math.min(2_147_483_647, (payload.solver_random_seed ?? 1) + 1),
     ...warmStartContinuationFields(warmStartResult, warmStartSnapshotId),
     settings: {
       ...payload.settings,
+      cp_sat_time_limit_seconds: Math.min(300, payload.settings.cp_sat_time_limit_seconds),
       cp_sat_no_improvement_seconds: Math.min(payload.settings.cp_sat_no_improvement_seconds || 60, 60),
     },
   };
@@ -1111,19 +1191,82 @@ function ProgressPhase({ status }: { status: CalculationJobStatus }) {
   );
 }
 
+function SaveConfigurationDialog({
+  name,
+  duplicateWarning,
+  isSaving,
+  onNameChange,
+  onCancel,
+  onConfirm,
+}: {
+  name: string;
+  duplicateWarning: string | null;
+  isSaving: boolean;
+  onNameChange: (value: string) => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="dialog-backdrop" role="presentation">
+      <form
+        className="panel save-config-dialog"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onConfirm();
+        }}
+      >
+        <div>
+          <p className="eyebrow">Shranjevanje</p>
+          <h2>Shrani uporabniško konfiguracijo</h2>
+        </div>
+        {duplicateWarning ? <div className="warning-box">{duplicateWarning}</div> : null}
+        <label className="field">
+          <span>Ime konfiguracije</span>
+          <input
+            autoFocus
+            disabled={isSaving}
+            onChange={(event) => onNameChange(event.target.value)}
+            value={name}
+          />
+        </label>
+        <div className="dialog-actions">
+          <button className="secondary-button compact-button" disabled={isSaving} onClick={onCancel} type="button">
+            Prekliči
+          </button>
+          <button className="primary-button compact-button" disabled={isSaving} type="submit">
+            {isSaving ? 'Shranjujem ...' : 'Shrani konfiguracijo'}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 function TimeLimitDecisionPanel({
   decision,
   onContinue,
+  onTryLeaderCrisis,
   onTryOfficeFallback,
+  onTryEmergencyShift,
   onKeepCurrent,
   isBusy,
 }: {
   decision: TimeLimitDecision;
   onContinue: () => void;
+  onTryLeaderCrisis: (maxExceptionHours: number) => void;
   onTryOfficeFallback: (selection: OfficeFallbackSelection) => void;
+  onTryEmergencyShift: (shiftCode: string) => void;
   onKeepCurrent: () => void;
   isBusy: boolean;
 }) {
+  const calculationPayload = decision.restartPlan.kind === 'one-down' ? null : decision.restartPlan.payload;
+  const currentResult = decision.currentResult;
+  const officeSuggestion = calculationPayload && currentResult
+    ? suggestedOfficeLicense(calculationPayload, currentResult)
+    : { license: 'FL' as const, reason: 'FL je najbolj prilagodljiv prvi office preizkus.' };
+  const emergencyShift = calculationPayload && currentResult
+    ? suggestedEmergencyShift(calculationPayload, currentResult)
+    : null;
   const initialOfficePool = decision.restartPlan.kind === 'one-down'
     ? { fl: 0, aps: 0, acs: 0 }
     : officePoolFromPayload(decision.restartPlan.payload);
@@ -1135,22 +1278,16 @@ function TimeLimitDecisionPanel({
   const defaultOfficeShift = officeShiftOptions[0] ?? fallbackSettings.officer_shifts[0]?.code ?? '';
   const [officeFallbackMode, setOfficeFallbackMode] = useState<OfficeFallbackMode>('auto');
   const [draftOfficeShift, setDraftOfficeShift] = useState(defaultOfficeShift);
+  const [maxLeaderExceptionHours, setMaxLeaderExceptionHours] = useState(1);
   const [draftOfficePool, setDraftOfficePool] = useState<OfficePool>(
-    officePoolTotal(initialOfficePool) > 0 ? initialOfficePool : { fl: 1, aps: 0, acs: 0 },
+    officePoolTotal(initialOfficePool) > 0
+      ? initialOfficePool
+      : {
+          fl: officeSuggestion.license === 'FL' ? 1 : 0,
+          aps: officeSuggestion.license === 'APS' ? 1 : 0,
+          acs: officeSuggestion.license === 'ACS' ? 1 : 0,
+        },
   );
-  useEffect(() => {
-    const nextOfficePool = decision.restartPlan.kind === 'one-down'
-      ? { fl: 0, aps: 0, acs: 0 }
-      : officePoolFromPayload(decision.restartPlan.payload);
-    const nextOfficeShiftOptions = decision.restartPlan.kind === 'one-down'
-      ? []
-      : decision.restartPlan.payload.settings.officer_shifts
-        .filter((shift) => shift.enabled !== false)
-        .map((shift) => shift.code);
-    setDraftOfficePool(officePoolTotal(nextOfficePool) > 0 ? nextOfficePool : { fl: 1, aps: 0, acs: 0 });
-    setOfficeFallbackMode('auto');
-    setDraftOfficeShift(nextOfficeShiftOptions[0] ?? fallbackSettings.officer_shifts[0]?.code ?? '');
-  }, [decision]);
 
   const hasPresetOffice = decision.restartPlan.kind !== 'one-down' && hasOfficePool(decision.restartPlan.payload);
   const officeSelection: OfficeFallbackSelection = {
@@ -1162,32 +1299,101 @@ function TimeLimitDecisionPanel({
   };
   const canTryOfficeFallback = decision.restartPlan.kind !== 'one-down'
     && hasOfficeFallbackSelection(officeSelection);
+  const canTryLeaderCrisis = decision.restartPlan.kind !== 'one-down'
+    && (currentResult?.missing_sector_hours ?? 0) > 0;
+  const canContinueSameRules = !coverageIsProven(decision.status);
   const updateDraftOfficePool = (key: keyof OfficePool, value: number) => {
     setDraftOfficePool((current) => ({ ...current, [key]: clamp(value, 0, 20) }));
   };
-  const bestText = decision.status.best_max_sector_hours === null
-    ? 'Trenutno najboljša rešitev še ni naložena.'
-    : `Trenutno najboljše: ${decision.status.best_max_sector_hours}/${decision.status.best_requested_sector_hours ?? 0} SH, manjka ${decision.status.best_missing_sector_hours ?? 0}.`;
   const title = decision.reason === 'manual-stop'
     ? 'Izračun si ustavil pred časovno mejo'
-    : 'Redna faza se je ustavila zaradi časovne omejitve';
-  const eyebrow = decision.reason === 'manual-stop' ? 'Ročna odločitev' : 'Odločitev po časovni meji';
+    : coverageIsProven(decision.status)
+      ? 'Dosežena je meja trenutnih pravil'
+      : stoppedOnTimeLimit(decision.status)
+        ? 'Časovni limit se je iztekel'
+        : 'Izračun se je ustavil z najboljšo najdeno rešitvijo';
+  const eyebrow = decision.reason === 'manual-stop'
+    ? 'Ročna odločitev'
+    : stoppedOnTimeLimit(decision.status)
+      ? 'Odločitev po časovni meji'
+      : 'Naslednji korak';
   return (
     <div className="time-limit-decision" role="status" aria-live="polite">
       <div>
         <p className="eyebrow">{eyebrow}</p>
         <h3>{title}</h3>
-        <p>{bestText}</p>
         <p>
-          To ne pomeni, da boljša rešitev ne obstaja. Lahko nadaljuješ redno iskanje,
-          posebej preizkusiš operativni office fallback, ali obdržiš trenutno najboljšo rešitev.
+          {coverageIsProven(decision.status)
+            ? 'Z enakimi pravili dodatno računanje ne more povečati SH. Izberi najmanjši operativni poseg ali obdrži rezultat.'
+            : 'Trenutna rešitev ostane shranjena. Nadaljuješ lahko isto iskanje ali preizkusiš en nadzorovan operativni poseg.'}
         </p>
       </div>
+      <div className="continuation-metrics" aria-label="Povzetek najboljše rešitve">
+        <div><span>Pokritost</span><strong>{decision.status.best_max_sector_hours ?? 0}/{decision.status.best_requested_sector_hours ?? 0} SH</strong></div>
+        <div><span>Manjka</span><strong>{decision.status.best_missing_sector_hours ?? 0} SH</strong></div>
+        <div><span>Zgornja meja</span><strong>{decision.status.solver_best_bound_sector_hours ?? 'ni dokazana'}</strong></div>
+        <div><span>Krizne ure</span><strong>{currentResult?.crisis_exception_hours ?? 0}</strong></div>
+      </div>
+      {decision.restartPlan.kind !== 'one-down' ? (
+        <div className="continuation-options">
+          <div className="continuation-option">
+            <div>
+              <strong>Nadaljuj isti model</strong>
+              <span>{canContinueSameRules ? 'Še 5 minut iz trenutne rešitve z novo iskalno potjo.' : 'Maksimalni SH je pri teh pravilih že dokazan.'}</span>
+            </div>
+            <button className="secondary-button compact-button" disabled={isBusy || !canContinueSameRules} onClick={onContinue} type="button">
+              Nadaljuj še 5 min
+            </button>
+          </div>
+          <div className="continuation-option">
+            <div>
+              <strong>Omejen krizni VI/FMP poskus</strong>
+              <span>Izjeme se odklenejo samo za poskus izboljšanja SH; rezerva jih ne more sprožiti.</span>
+            </div>
+            <label className="crisis-hour-limit">
+              Največ ur
+              <input
+                min="1"
+                max="48"
+                type="number"
+                value={maxLeaderExceptionHours}
+                onKeyDown={preventNumberInputArrowStep}
+                onChange={(event) => setMaxLeaderExceptionHours(clamp(Number(event.target.value), 1, 48))}
+              />
+            </label>
+            <button
+              className="secondary-button compact-button"
+              disabled={isBusy || !canTryLeaderCrisis}
+              onClick={() => onTryLeaderCrisis(maxLeaderExceptionHours)}
+              type="button"
+            >
+              Preizkusi krizne ure
+            </button>
+          </div>
+          {emergencyShift ? (
+            <div className="continuation-option">
+              <div>
+                <strong>Začasno omogoči {emergencyShift.code}</strong>
+                <span>Izmena je trenutno izključena in se prekriva z nepokritimi urami. Sprememba velja samo za ta poskus.</span>
+              </div>
+              <button
+                className="secondary-button compact-button"
+                disabled={isBusy}
+                onClick={() => onTryEmergencyShift(emergencyShift.code)}
+                type="button"
+              >
+                Preizkusi {emergencyShift.code}
+              </button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       {decision.restartPlan.kind !== 'one-down' ? (
         <div className="office-fallback-picker">
           <div>
             <strong>{hasPresetOffice ? 'Operativni office je že vpisan' : 'Dodaj office samo za ta poskus'}</strong>
             <span>
+              {!hasPresetOffice ? `${officeSuggestion.reason} ` : ''}
               {officeFallbackMode === 'auto'
                 ? 'Solver bo sam preizkusil aktivne office izmene in uporabil tisto, ki najbolje popravi pokritost.'
                 : 'Izbrana office izmena bo dodana kot konkretna office oseba. Trenutna rešitev je samo warm start, zato lahko solver premeša ostale izmene.'}
@@ -1217,6 +1423,7 @@ function TimeLimitDecisionPanel({
               max="20"
               type="number"
               value={draftOfficePool.fl}
+              onKeyDown={preventNumberInputArrowStep}
               onChange={(event) => updateDraftOfficePool('fl', Number(event.target.value))}
             />
           </label>
@@ -1227,6 +1434,7 @@ function TimeLimitDecisionPanel({
               max="20"
               type="number"
               value={draftOfficePool.aps}
+              onKeyDown={preventNumberInputArrowStep}
               onChange={(event) => updateDraftOfficePool('aps', Number(event.target.value))}
             />
           </label>
@@ -1237,6 +1445,7 @@ function TimeLimitDecisionPanel({
               max="20"
               type="number"
               value={draftOfficePool.acs}
+              onKeyDown={preventNumberInputArrowStep}
               onChange={(event) => updateDraftOfficePool('acs', Number(event.target.value))}
             />
           </label>
@@ -1256,9 +1465,11 @@ function TimeLimitDecisionPanel({
         </div>
       ) : null}
       <div className="decision-actions">
-        <button className="primary-button compact-button" disabled={isBusy} onClick={onContinue} type="button">
-          Nadaljuj redno fazo
-        </button>
+        {decision.restartPlan.kind === 'one-down' ? (
+          <button className="secondary-button compact-button" disabled={isBusy} onClick={onContinue} type="button">
+            Nadaljuj preverjanje
+          </button>
+        ) : null}
         {decision.restartPlan.kind !== 'one-down' ? (
           <button
             className="secondary-button compact-button"
@@ -1269,10 +1480,88 @@ function TimeLimitDecisionPanel({
             {officeFallbackMode === 'auto' ? 'Poišči najboljši office fit' : 'Računaj z izbrano office izmeno'}
           </button>
         ) : null}
-        <button className="secondary-button compact-button" disabled={isBusy} onClick={onKeepCurrent} type="button">
-          Obdrži trenutno najboljšo
+        <button className="primary-button compact-button" disabled={isBusy} onClick={onKeepCurrent} type="button">
+          Uporabi trenutno rešitev
         </button>
       </div>
+    </div>
+  );
+}
+
+function signedMetric(value: number, suffix = ''): string {
+  if (value === 0) {
+    return `0${suffix}`;
+  }
+  return `${value > 0 ? '+' : ''}${value}${suffix}`;
+}
+
+function ContinuationComparisonPanel({
+  comparison,
+  candidate,
+  isBusy,
+  onAcceptCandidate,
+  onRestoreBaseline,
+}: {
+  comparison: ContinuationComparison;
+  candidate: CalculatorResponse | null;
+  isBusy: boolean;
+  onAcceptCandidate: () => void;
+  onRestoreBaseline: () => void;
+}) {
+  const resolvedCandidate = candidate ?? comparison.baseline;
+  const delta = continuationDelta(comparison.baseline, resolvedCandidate);
+  const candidateChanged = resolvedCandidate !== comparison.baseline;
+  return (
+    <div className="continuation-comparison" role="status" aria-live="polite">
+      <div className="continuation-comparison-heading">
+        <div>
+          <p className="eyebrow">Primerjava nadaljevanja</p>
+          <h3>{comparison.actionLabel}</h3>
+        </div>
+        {isBusy ? <span className="continuation-running">Poskus še teče</span> : null}
+      </div>
+      <div className="continuation-table-wrap">
+        <table className="continuation-table">
+          <thead>
+            <tr>
+              <th>Različica</th>
+              <th>SH</th>
+              <th>Ljudje</th>
+              <th>Krizne ure</th>
+              <th>Izkoriščenost</th>
+              <th>Office uporabljen</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>Prejšnja</th>
+              <td>{comparison.baseline.max_sector_hours}/{comparison.baseline.requested_sector_hours}</td>
+              <td>{comparison.baseline.planned_people}</td>
+              <td>{comparison.baseline.crisis_exception_hours}</td>
+              <td>{comparison.baseline.utilization_percent}%</td>
+              <td>{resultUsesOffice(comparison.baseline) ? 'Da' : 'Ne'}</td>
+            </tr>
+            <tr className="candidate-row">
+              <th>Nov poskus</th>
+              <td>{resolvedCandidate.max_sector_hours}/{resolvedCandidate.requested_sector_hours} <small>{signedMetric(delta.sectorHours)}</small></td>
+              <td>{resolvedCandidate.planned_people} <small>{signedMetric(delta.plannedPeople)}</small></td>
+              <td>{resolvedCandidate.crisis_exception_hours} <small>{signedMetric(delta.crisisHours)}</small></td>
+              <td>{resolvedCandidate.utilization_percent}% <small>{signedMetric(delta.utilizationPercent, '%')}</small></td>
+              <td>{resultUsesOffice(resolvedCandidate) ? 'Da' : 'Ne'}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      {!isBusy ? (
+        <div className="decision-actions">
+          <button className="primary-button compact-button" disabled={!candidateChanged} onClick={onAcceptCandidate} type="button">
+            Uporabi novi rezultat
+          </button>
+          <button className="secondary-button compact-button" onClick={onRestoreBaseline} type="button">
+            Vrni prejšnjo rešitev
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -2151,7 +2440,10 @@ function ManualConfigurationsPanel({
   const demandSectorHours = currentDemand.reduce((sum, value) => sum + value, 0);
   const [targetSectorHoursInput, setTargetSectorHoursInput] = useState(() => String(demandSectorHours));
   const [targetSectorHoursTouched, setTargetSectorHoursTouched] = useState(false);
-  const parsedTargetSectorHours = numericMetric(targetSectorHoursInput);
+  const displayedTargetSectorHours = targetSectorHoursTouched
+    ? targetSectorHoursInput
+    : String(demandSectorHours);
+  const parsedTargetSectorHours = numericMetric(displayedTargetSectorHours);
   const requiredSectorHours = parsedTargetSectorHours === null
     ? demandSectorHours
     : Math.max(0, Math.round(parsedTargetSectorHours));
@@ -2166,12 +2458,6 @@ function ManualConfigurationsPanel({
   useEffect(() => {
     window.localStorage.setItem(FOCUS_STORAGE_KEY, JSON.stringify(focusNames));
   }, [focusNames]);
-
-  useEffect(() => {
-    if (!targetSectorHoursTouched) {
-      setTargetSectorHoursInput(String(demandSectorHours));
-    }
-  }, [demandSectorHours, targetSectorHoursTouched]);
 
   const configurations = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase();
@@ -2218,12 +2504,9 @@ function ManualConfigurationsPanel({
         || first.name.localeCompare(second.name)
       ))
   ), [focusNames, library?.configurations]);
-
-  useEffect(() => {
-    if (!focusCandidate || focusNames.includes(focusCandidate)) {
-      setFocusCandidate(focusCandidates[0]?.name ?? '');
-    }
-  }, [focusCandidate, focusCandidates, focusNames]);
+  const activeFocusCandidate = focusCandidate && !focusNames.includes(focusCandidate)
+    ? focusCandidate
+    : focusCandidates[0]?.name ?? '';
 
   const auditSummary = useMemo(() => {
     const rows = audit?.rows ?? [];
@@ -2254,7 +2537,7 @@ function ManualConfigurationsPanel({
   ), [calibration]);
 
   const addFocusConfiguration = () => {
-    const name = focusCandidate.trim();
+    const name = activeFocusCandidate.trim();
     if (!name || focusNames.includes(name)) {
       return;
     }
@@ -2382,7 +2665,7 @@ function ManualConfigurationsPanel({
           <div className="focus-add-row">
             <label className="field">
               <span>Dodaj konfiguracijo</span>
-              <select value={focusCandidate} onChange={(event) => setFocusCandidate(event.target.value)}>
+              <select value={activeFocusCandidate} onChange={(event) => setFocusCandidate(event.target.value)}>
                 {focusCandidates.map((item) => (
                   <option key={item.id} value={item.name}>
                     {item.name} · {item.parsed_total} ljudi · {formatAuditMetric(item.model_max_sector_hours)} SH
@@ -2390,7 +2673,7 @@ function ManualConfigurationsPanel({
                 ))}
               </select>
             </label>
-            <button className="secondary-button" disabled={!focusCandidate} onClick={addFocusConfiguration} type="button">
+            <button className="secondary-button" disabled={!activeFocusCandidate} onClick={addFocusConfiguration} type="button">
               Dodaj v fokus
             </button>
           </div>
@@ -2618,7 +2901,8 @@ function ManualConfigurationsPanel({
                     setTargetSectorHoursInput(event.target.value);
                   }}
                   type="number"
-                  value={targetSectorHoursInput}
+                  value={displayedTargetSectorHours}
+                  onKeyDown={preventNumberInputArrowStep}
                 />
                 <strong>SH</strong>
               </span>
@@ -2843,15 +3127,6 @@ function isCalculatorResponse(value: unknown): value is CalculatorResponse {
   );
 }
 
-function workerCopyLabel(workerId: string, peopleById: Map<string, CalculatorResponse['people'][number]>): string {
-  const person = peopleById.get(workerId);
-  if (!person) {
-    return workerId;
-  }
-  const shiftLabel = personShiftLabel(person);
-  return `${personDisplayId(person)} ${person.license} ${shiftLabel}`;
-}
-
 function personShiftLabel(person: CalculatorResponse['people'][number]): string {
   return person.role ? `${person.role}/${person.shift}` : person.shift;
 }
@@ -3041,10 +3316,6 @@ function roleSectorSlotViolation(person: VirtualPerson, slot: number, shifts: Sh
     return `${roleLabel} ne sme delati prve ure svoje izmene.`;
   }
   return null;
-}
-
-function roleAllowsSectorSlot(person: VirtualPerson, slot: number, shifts: ShiftRule[]): boolean {
-  return roleSectorSlotViolation(person, slot, shifts) === null;
 }
 
 function scheduledSlotsForWorker(result: CalculatorResponse, workerId: string): Set<number> {
@@ -3440,6 +3711,9 @@ function formatMetricsForCopy(result: CalculatorResponse): string {
     ['Razlaga meje', result.baseline_min_people_formula ?? ''],
     ['CP-SAT SH meja', result.solver_upper_bound_sector_hours ?? ''],
     ['Vrzel do SH meje', result.solver_gap_to_upper_bound ?? ''],
+    ['Krizne VI/FMP ure', result.crisis_exception_hours],
+    ['VI na robnih urah', result.leader_edge_exception_hours],
+    ['VI/FMP prekrivanje', result.fmp_vi_overlap_hours],
     ['Splaniranih ljudi', result.planned_people],
     ['Aktivnih na sektorju', result.active_people],
     ['Obvezne FL vloge', result.minimum_required_fl],
@@ -3626,6 +3900,9 @@ function formatResultForCsv(result: CalculatorResponse): string {
     ['Razlaga meje', result.baseline_min_people_formula ?? ''],
     ['CP-SAT SH meja', result.solver_upper_bound_sector_hours ?? ''],
     ['Vrzel do SH meje', result.solver_gap_to_upper_bound ?? ''],
+    ['Krizne VI/FMP ure', result.crisis_exception_hours],
+    ['VI na robnih urah', result.leader_edge_exception_hours],
+    ['VI/FMP prekrivanje', result.fmp_vi_overlap_hours],
     ['Splaniranih ljudi', result.planned_people],
     ['Aktivnih na sektorju', result.active_people],
     ['Manjkajoče ure', result.missing_sector_hours],
@@ -3927,6 +4204,7 @@ function NumberField({
         min={min}
         max={max}
         value={value}
+        onKeyDown={preventNumberInputArrowStep}
         onChange={(event) => onChange(Number(event.target.value))}
       />
     </label>
@@ -4050,17 +4328,22 @@ function ResultCsvImportButton({ onImport }: { onImport: (result: CalculatorResp
 
 function SettingsPanel({
   settings,
+  defaultExtraNightA21FlCount,
   saveState,
   onChange,
   onSave,
   onReset,
 }: {
   settings: CalculatorSettings;
+  defaultExtraNightA21FlCount: number;
   saveState: 'idle' | 'saved' | 'failed';
   onChange: (settings: CalculatorSettings) => void;
   onSave: () => void;
   onReset: () => void;
 }) {
+  const includedV3Count = settings.include_required_shift_leaders ? 1 : 0;
+  const extraNightA21FlCount = Math.max(0, settings.required_night_fl_count - includedV3Count);
+
   const updateShift = (index: number, patch: Partial<ShiftRule>) => {
     onChange({
       ...settings,
@@ -4118,15 +4401,15 @@ function SettingsPanel({
           helper="Trenutni MVP uporablja 1 celico počitka po 2 urah."
         />
         <NumberField
-          label="Nočna FL zasedba"
+          label="Nočnih A21 FL poleg V3"
           min={0}
-          max={10}
-          value={settings.required_night_fl_count}
-          onChange={(value) => onChange({ ...settings, required_night_fl_count: value })}
+          max={9}
+          value={extraNightA21FlCount}
+          onChange={(value) => onChange({ ...settings, required_night_fl_count: value + includedV3Count })}
           helper={
             settings.include_night_fl_requirement
-              ? 'Skupaj z V3. Privzeto 4 pomeni V3 + 3× A21.'
-              : 'Ignorirano, dokler nočna A21 FL zahteva ni vklopljena.'
+              ? `Privzeto ${defaultExtraNightA21FlCount} pomeni V3 + ${defaultExtraNightA21FlCount}× A21 FL.`
+              : 'Ignorirano, dokler pravilo za dodatne nočne A21 FL ni vklopljeno.'
           }
         />
         <NumberField
@@ -4174,7 +4457,7 @@ function SettingsPanel({
           checked={settings.include_night_fl_requirement}
           onChange={(event) => onChange({ ...settings, include_night_fl_requirement: event.target.checked })}
         />
-        <span>Zahtevaj dodatno nočno A21 FL zasedbo</span>
+        <span>Zahtevaj nočne A21 FL poleg V3</span>
       </label>
 
       <div className="table-card">
@@ -4209,6 +4492,7 @@ function SettingsPanel({
                       min={0}
                       max={23}
                       value={shift.start_hour}
+                      onKeyDown={preventNumberInputArrowStep}
                       onChange={(event) => updateShift(index, { start_hour: Number(event.target.value) })}
                     />
                   </td>
@@ -4219,6 +4503,7 @@ function SettingsPanel({
                       min={1}
                       max={24}
                       value={shift.duration_hours}
+                      onKeyDown={preventNumberInputArrowStep}
                       onChange={(event) => updateShift(index, { duration_hours: Number(event.target.value) })}
                     />
                   </td>
@@ -4261,6 +4546,7 @@ function SettingsPanel({
                       min={0}
                       max={23}
                       value={shift.start_hour}
+                      onKeyDown={preventNumberInputArrowStep}
                       onChange={(event) => updateOfficerShift(index, { start_hour: Number(event.target.value) })}
                     />
                   </td>
@@ -4271,6 +4557,7 @@ function SettingsPanel({
                       min={1}
                       max={24}
                       value={shift.duration_hours}
+                      onKeyDown={preventNumberInputArrowStep}
                       onChange={(event) => updateOfficerShift(index, { duration_hours: Number(event.target.value) })}
                     />
                   </td>
@@ -4552,9 +4839,6 @@ function FixedStaffEditor({
   onChange: (rows: FixedStaffRow[]) => void;
 }) {
   const shiftOptions = shifts.filter((shift) => shift.enabled !== false).map((shift) => shift.code);
-  const officerShiftOptions = fallbackSettings.officer_shifts
-    .filter((shift) => shift.enabled !== false)
-    .map((shift) => shift.code);
   const defaultShift = shiftOptions[0] ?? 'A7';
 
   const addRow = () => {
@@ -4603,6 +4887,7 @@ function FixedStaffEditor({
                 max={80}
                 type="number"
                 value={row.count}
+                onKeyDown={preventNumberInputArrowStep}
                 onChange={(event) => updateRow(row.id, { count: Number(event.target.value) })}
               />
               <select
@@ -4734,6 +5019,7 @@ function OfficerStaffEditor({
               max={80}
               type="number"
               value={row.fl}
+              onKeyDown={preventNumberInputArrowStep}
               onChange={(event) => updateRow(row.shift, { fl: clamp(Number(event.target.value), 0, 80) })}
             />
             <input
@@ -4741,6 +5027,7 @@ function OfficerStaffEditor({
               max={80}
               type="number"
               value={row.aps}
+              onKeyDown={preventNumberInputArrowStep}
               onChange={(event) => updateRow(row.shift, { aps: clamp(Number(event.target.value), 0, 80) })}
             />
             <input
@@ -4748,6 +5035,7 @@ function OfficerStaffEditor({
               max={80}
               type="number"
               value={row.acs}
+              onKeyDown={preventNumberInputArrowStep}
               onChange={(event) => updateRow(row.shift, { acs: clamp(Number(event.target.value), 0, 80) })}
             />
           </div>
@@ -5554,7 +5842,6 @@ function ConfigurationComparisonPanel({
   manualLibrary: ManualConfigurationLibrary | null;
 }) {
   const [pairLibrary, setPairLibrary] = useState<ManualConfigurationLibrary | null>(null);
-  const [isPairLibraryLoading, setIsPairLibraryLoading] = useState(false);
   const [pairLibraryError, setPairLibraryError] = useState<string | null>(null);
   const [leftSelection, setLeftSelection] = useState('');
   const [rightSelection, setRightSelection] = useState('');
@@ -5563,6 +5850,7 @@ function ConfigurationComparisonPanel({
   const [isPairLoading, setIsPairLoading] = useState(false);
   const [pairError, setPairError] = useState<string | null>(null);
   const activeLibrary = manualLibrary ?? pairLibrary;
+  const isPairLibraryLoading = !manualLibrary && !pairLibrary && !pairLibraryError;
   const comparableConfigs = useMemo(() => (
     [...(activeLibrary?.configurations ?? [])]
       .filter((configuration) => configuration.has_manual_schedule)
@@ -5585,14 +5873,28 @@ function ConfigurationComparisonPanel({
     }));
     return [...currentOption, ...manualOptions];
   }, [comparableConfigs, result]);
+  const validComparisonIds = useMemo(
+    () => new Set(comparisonOptions.map((option) => option.id)),
+    [comparisonOptions],
+  );
+  const defaultLeftSelection = result
+    ? CURRENT_RESULT_COMPARISON_ID
+    : comparableConfigs[0]?.id ?? '';
+  const defaultRightSelection = result
+    ? comparableConfigs[0]?.id ?? ''
+    : comparableConfigs[1]?.id ?? '';
+  const resolvedLeftSelection = validComparisonIds.has(leftSelection)
+    ? leftSelection
+    : defaultLeftSelection;
+  const resolvedRightSelection = validComparisonIds.has(rightSelection)
+    ? rightSelection
+    : defaultRightSelection;
 
   useEffect(() => {
     if (manualLibrary || pairLibrary) {
       return;
     }
     let cancelled = false;
-    setIsPairLibraryLoading(true);
-    setPairLibraryError(null);
     getManualConfigurations()
       .then((library) => {
         if (!cancelled) {
@@ -5603,50 +5905,18 @@ function ConfigurationComparisonPanel({
         if (!cancelled) {
           setPairLibraryError(caught instanceof Error ? caught.message : 'Baze konfiguracij ni bilo mogoče naložiti.');
         }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setIsPairLibraryLoading(false);
-        }
       });
     return () => {
       cancelled = true;
     };
   }, [manualLibrary, pairLibrary]);
 
-  useEffect(() => {
-    if (!result) {
-      if (leftSelection === CURRENT_RESULT_COMPARISON_ID) {
-        setLeftSelection('');
-      }
-      if (rightSelection === CURRENT_RESULT_COMPARISON_ID) {
-        setRightSelection('');
-      }
-    }
-  }, [leftSelection, result, rightSelection]);
-
-  useEffect(() => {
-    const defaultLeft = result
-      ? CURRENT_RESULT_COMPARISON_ID
-      : comparableConfigs[0]?.id ?? '';
-    const defaultRight = result
-      ? comparableConfigs[0]?.id ?? ''
-      : comparableConfigs[1]?.id ?? '';
-
-    if (!leftSelection && defaultLeft) {
-      setLeftSelection(defaultLeft);
-    }
-    if (!rightSelection && defaultRight) {
-      setRightSelection(defaultRight);
-    }
-  }, [comparableConfigs, leftSelection, result, rightSelection]);
-
   const compareSelectedPair = useCallback(async () => {
-    if (!leftSelection || !rightSelection) {
+    if (!resolvedLeftSelection || !resolvedRightSelection) {
       setPairError('Izberi dve konfiguraciji.');
       return;
     }
-    if (leftSelection === rightSelection) {
+    if (resolvedLeftSelection === resolvedRightSelection) {
       setPairError('Za primerjavo izberi dve različni konfiguraciji.');
       return;
     }
@@ -5663,8 +5933,8 @@ function ConfigurationComparisonPanel({
         return metricsFromManualConfiguration(await getManualConfiguration(selection));
       };
       const [left, right] = await Promise.all([
-        loadMetrics(leftSelection),
-        loadMetrics(rightSelection),
+        loadMetrics(resolvedLeftSelection),
+        loadMetrics(resolvedRightSelection),
       ]);
       setLeftMetrics(left);
       setRightMetrics(right);
@@ -5673,17 +5943,17 @@ function ConfigurationComparisonPanel({
     } finally {
       setIsPairLoading(false);
     }
-  }, [leftSelection, result, rightSelection]);
+  }, [resolvedLeftSelection, resolvedRightSelection, result]);
 
   const useCurrentResultInPair = useCallback(() => {
     if (!result) {
       return;
     }
     setLeftSelection(CURRENT_RESULT_COMPARISON_ID);
-    if (!rightSelection || rightSelection === CURRENT_RESULT_COMPARISON_ID) {
+    if (!resolvedRightSelection || resolvedRightSelection === CURRENT_RESULT_COMPARISON_ID) {
       setRightSelection(comparableConfigs[0]?.id ?? '');
     }
-  }, [comparableConfigs, result, rightSelection]);
+  }, [comparableConfigs, resolvedRightSelection, result]);
 
   const licenseCounts = comparison?.result.license_counts ?? { FL: 0, APS: 0, ACS: 0 };
   const roleHours = comparison?.result.role_hours ?? { V1: 0, V2: 0, V3: 0, FMP: 0 };
@@ -5705,7 +5975,7 @@ function ConfigurationComparisonPanel({
         <div className="pair-selector-grid">
           <label>
             <span>Leva konfiguracija</span>
-            <select value={leftSelection} onChange={(event) => setLeftSelection(event.target.value)}>
+            <select value={resolvedLeftSelection} onChange={(event) => setLeftSelection(event.target.value)}>
               <option value="">Izberi konfiguracijo</option>
               {comparisonOptions.map((option) => (
                 <option key={option.id} value={option.id}>
@@ -5716,7 +5986,7 @@ function ConfigurationComparisonPanel({
           </label>
           <label>
             <span>Desna konfiguracija</span>
-            <select value={rightSelection} onChange={(event) => setRightSelection(event.target.value)}>
+            <select value={resolvedRightSelection} onChange={(event) => setRightSelection(event.target.value)}>
               <option value="">Izberi konfiguracijo</option>
               {comparisonOptions.map((option) => (
                 <option key={option.id} value={option.id}>
@@ -6105,6 +6375,12 @@ function Results({
           <span className="metric-label">Manjkajoče ure</span>
           <strong>{result.missing_sector_hours}</strong>
         </div>
+        <div className={`metric-card${result.crisis_exception_hours > 0 ? ' warning-metric' : ''}`}>
+          <span className="metric-label">
+            Krizne VI/FMP ure <MetricInfo text={`VI robne ure ${result.leader_edge_exception_hours}; VI/FMP prekrivanje ${result.fmp_vi_overlap_hours}.`} />
+          </span>
+          <strong>{result.crisis_exception_hours}</strong>
+        </div>
         <div className="metric-card">
           <span className="metric-label">Neuporabljeni ljudje</span>
           <strong>{result.unused_people}</strong>
@@ -6371,6 +6647,7 @@ function Results({
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>('calculator');
   const [settings, setSettings] = useState<CalculatorSettings>(fallbackSettings);
+  const [defaultSettings, setDefaultSettings] = useState<CalculatorSettings>(fallbackSettings);
   const [calculationMode, setCalculationMode] = useState<CalculationMode>('staff_to_coverage');
   const [totalPeople, setTotalPeople] = useState(28);
   const [flCount, setFlCount] = useState(12);
@@ -6396,6 +6673,8 @@ export default function App() {
   const [calculationProgress, setCalculationProgress] = useState(0);
   const [paretoProgress, setParetoProgress] = useState(0);
   const [jobStatus, setJobStatus] = useState<CalculationJobStatus | null>(null);
+  const [cancelAction, setCancelAction] = useState<CalculationCancelAction>(null);
+  const [calculationNotice, setCalculationNotice] = useState<string | null>(null);
   const [paretoJobStatus, setParetoJobStatus] = useState<CalculationJobStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [paretoError, setParetoError] = useState<string | null>(null);
@@ -6410,6 +6689,8 @@ export default function App() {
   const [manualLibraryError, setManualLibraryError] = useState<string | null>(null);
   const [isManualLibraryLoading, setIsManualLibraryLoading] = useState(false);
   const [isSavingUserConfiguration, setIsSavingUserConfiguration] = useState(false);
+  const [pendingSaveResult, setPendingSaveResult] = useState<CalculatorResponse | null>(null);
+  const [saveConfigurationName, setSaveConfigurationName] = useState('');
   const [isCompletingConfiguration, setIsCompletingConfiguration] = useState(false);
   const [configurationComparison, setConfigurationComparison] = useState<ConfigurationComparisonResult | null>(null);
   const [configurationComparisonError, setConfigurationComparisonError] = useState<string | null>(null);
@@ -6421,6 +6702,7 @@ export default function App() {
   const [whatIfSummary, setWhatIfSummary] = useState<string | null>(null);
   const [pausedPayload, setPausedPayload] = useState<CalculatorRequest | null>(null);
   const [timeLimitDecision, setTimeLimitDecision] = useState<TimeLimitDecision | null>(null);
+  const [continuationComparison, setContinuationComparison] = useState<ContinuationComparison | null>(null);
   const pollingTimerRef = useRef<PollingTimer | null>(null);
   const paretoPollingTimerRef = useRef<PollingTimer | null>(null);
   const activeJobIdRef = useRef<string | null>(null);
@@ -6437,6 +6719,7 @@ export default function App() {
     getDefaultSettings()
       .then((defaultSettings) => {
         const normalizedDefaults = normalizeSettings({ ...fallbackSettings, ...defaultSettings });
+        setDefaultSettings(normalizedDefaults);
         const loadedSettings = loadSavedCalculatorSettings(normalizedDefaults);
         const savedInputs = loadSavedCalculatorInputs(loadedSettings);
         setSettings(loadedSettings);
@@ -6486,33 +6769,33 @@ export default function App() {
 
   useEffect(() => {
     if (!result) {
-      setConfigurationComparison(null);
-      setConfigurationComparisonError(null);
-      setIsConfigurationComparisonLoading(false);
       return;
     }
 
     let cancelled = false;
-    setIsConfigurationComparisonLoading(true);
-    setConfigurationComparisonError(null);
-    compareResultToConfigurations(result, 8)
-      .then((comparison) => {
+    void Promise.resolve().then(async () => {
+      if (cancelled) {
+        return;
+      }
+      setIsConfigurationComparisonLoading(true);
+      setConfigurationComparisonError(null);
+      try {
+        const comparison = await compareResultToConfigurations(result, 8);
         if (!cancelled) {
           setConfigurationComparison(comparison);
         }
-      })
-      .catch((caught) => {
+      } catch (caught) {
         if (!cancelled) {
           setConfigurationComparisonError(
             caught instanceof Error ? caught.message : 'Napaka pri primerjavi konfiguracij.',
           );
         }
-      })
-      .finally(() => {
+      } finally {
         if (!cancelled) {
           setIsConfigurationComparisonLoading(false);
         }
-      });
+      }
+    });
 
     return () => {
       cancelled = true;
@@ -6570,13 +6853,8 @@ export default function App() {
     }
     return candidates.length > 0 ? candidates : [DEFAULT_FMP_SHIFT];
   }, [fmpShift, settings.shifts]);
+  const selectedFmpShift = fmpShiftOptions.includes(fmpShift) ? fmpShift : DEFAULT_FMP_SHIFT;
   const minimumLicenseRatioTotal = minimumLicenseRatio.fl + minimumLicenseRatio.aps + minimumLicenseRatio.acs;
-
-  useEffect(() => {
-    if (!fmpShiftOptions.includes(fmpShift)) {
-      setFmpShift(DEFAULT_FMP_SHIFT);
-    }
-  }, [fmpShift, fmpShiftOptions]);
 
   const updateCounts = (nextTotal: number, nextFl: number, nextAps: number) => {
     const safeTotal = clamp(nextTotal, 1, 80);
@@ -6607,8 +6885,8 @@ export default function App() {
   };
 
   const resetSettings = () => {
-    setSettings(fallbackSettings);
-    setOfficerStaff(createOfficerRows(fallbackSettings.officer_shifts));
+    setSettings(defaultSettings);
+    setOfficerStaff(createOfficerRows(defaultSettings.officer_shifts));
     try {
       window.localStorage.removeItem(savedSettingsStorageKey);
       setSettingsSaveState('saved');
@@ -6637,7 +6915,7 @@ export default function App() {
         officePool,
         includeFmp,
         fmpShiftMode,
-        fmpShift,
+        fmpShift: selectedFmpShift,
       };
       window.localStorage.setItem(savedCalculatorInputsStorageKey, JSON.stringify(payload));
       window.localStorage.setItem(savedSettingsStorageKey, JSON.stringify(settings));
@@ -6655,7 +6933,12 @@ export default function App() {
     setWhatIfSummary(null);
     setPausedPayload(null);
     setTimeLimitDecision(null);
+    setContinuationComparison(null);
     setManualResultConfigId(null);
+    setCalculationNotice(null);
+    setConfigurationComparison(null);
+    setConfigurationComparisonError(null);
+    setIsConfigurationComparisonLoading(false);
   };
 
   const applySectorDemand = (values: number[], label?: string) => {
@@ -6705,6 +6988,7 @@ export default function App() {
 
       if (status.status === 'finished') {
         stopPolling();
+        setCancelAction(null);
         const currentResult = await loadJobResult(jobId, status.best_result_version);
         setCalculationProgress(100);
         setIsLoading(false);
@@ -6722,6 +7006,8 @@ export default function App() {
             currentResult,
             reason: 'time-limit',
           });
+        } else if (status.cancel_requested) {
+          setCalculationNotice('Izračun je prekinjen. Prikazana je zadnja najdena rešitev.');
         }
         showDecisionAfterCancelRef.current = false;
         activeJobIdRef.current = null;
@@ -6730,10 +7016,20 @@ export default function App() {
 
       if (status.status === 'failed') {
         stopPolling();
+        setCancelAction(null);
         if (status.best_result_available) {
           await loadJobResult(jobId, status.best_result_version);
         }
-        setError(status.error ?? status.message ?? 'Izračun se je ustavil.');
+        if (status.cancel_requested) {
+          setError(null);
+          setCalculationNotice(
+            status.best_result_available
+              ? 'Izračun je prekinjen. Prikazana je zadnja najdena rešitev.'
+              : 'Izračun je prekinjen pred prvo najdeno rešitvijo.',
+          );
+        } else {
+          setError(status.error ?? status.message ?? 'Izračun se je ustavil.');
+        }
         setIsLoading(false);
         setTimeLimitDecision(null);
         showDecisionAfterCancelRef.current = false;
@@ -6747,6 +7043,7 @@ export default function App() {
     } catch (caught) {
       if (activeJobIdRef.current === jobId) {
         stopPolling();
+        setCancelAction(null);
         setError(caught instanceof Error ? caught.message : 'Neznana napaka pri preverjanju statusa.');
         setIsLoading(false);
         setTimeLimitDecision(null);
@@ -6887,7 +7184,7 @@ export default function App() {
       acs_count: isDemandMode ? 0 : acsCount,
       include_fmp: includeFmp,
       fmp_shift_mode: fmpShiftMode,
-      fmp_shift: fmpShiftOptions.includes(fmpShift) ? fmpShift : DEFAULT_FMP_SHIFT,
+      fmp_shift: selectedFmpShift,
       settings,
       requested_sector_counts: effectiveSectorDemand,
       fixed_staff: fixedStaffPayload,
@@ -6898,12 +7195,16 @@ export default function App() {
       include_pareto: false,
       prefer_minimal_fl: preferMinimalFl,
       office_fallback_mode: 'auto',
+      leader_exception_mode: 'forbid',
+      max_leader_exception_hours: 0,
+      continuation_min_sector_hours: null,
+      solver_random_seed: 1,
       preferred_manual_configuration_id: manualSeedConfigId,
       warm_start: null,
       warm_start_snapshot_id: null,
     };
     return payload;
-  }, [acsCount, apsCount, calculationMode, effectiveSectorDemand, fixedStaff, flCount, fmpShift, fmpShiftMode, fmpShiftOptions, includeFmp, manualSeedConfigId, minimumLicenseRatio, officePool, officerStaff, preferMinimalFl, settings, totalPeople, usePeopleLimit]);
+  }, [acsCount, apsCount, calculationMode, effectiveSectorDemand, fixedStaff, flCount, fmpShiftMode, includeFmp, manualSeedConfigId, minimumLicenseRatio, officePool, officerStaff, preferMinimalFl, selectedFmpShift, settings, totalPeople, usePeopleLimit]);
 
   const startJobWithProgress = async ({
     startJob,
@@ -6934,12 +7235,17 @@ export default function App() {
     }
     bestResultVersionRef.current = 0;
     showDecisionAfterCancelRef.current = false;
+    setCancelAction(null);
     setIsLoading(true);
     setCalculationProgress(0);
     setJobStatus(null);
     setTimeLimitDecision(null);
+    setCalculationNotice(null);
     if (clearResult) {
       setResult(null);
+      setConfigurationComparison(null);
+      setConfigurationComparisonError(null);
+      setIsConfigurationComparisonLoading(false);
     }
     setError(null);
 
@@ -6956,6 +7262,7 @@ export default function App() {
       void pollJobStatus(job.job_id);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : errorMessage);
+      setCancelAction(null);
       setIsLoading(false);
     }
   };
@@ -6972,11 +7279,13 @@ export default function App() {
   const runCalculation = async () => {
     setWhatIfSummary(null);
     setPausedPayload(null);
+    setContinuationComparison(null);
     setManualResultConfigId(null);
     await startCalculationFromPayload(buildRequestPayload(), true);
   };
 
   const runLockedRosterOptimization = async (currentResult: CalculatorResponse) => {
+    setContinuationComparison(null);
     const basePayload = lastCalculationPayloadRef.current ?? buildRequestPayload();
     const payload = clonePayloadForLockedRoster(basePayload, currentResult);
     const lockedPeople = payload.locked_staff.reduce((sum, row) => sum + row.count, 0);
@@ -7086,30 +7395,45 @@ export default function App() {
       setError('Shraniš lahko samo konfiguracijo, ki pokrije vse zahtevane sektorske ure.');
       return;
     }
-    if (configurationComparison?.duplicate_warning) {
-      const confirmed = window.confirm(
-        `${configurationComparison.duplicate_warning}\n\nVseeno shrani novo uporabniško konfiguracijo?`,
-      );
-      if (!confirmed) {
-        return;
-      }
-    }
-    const defaultName = `User ${currentResult.planned_people}p ${currentResult.max_sector_hours}SH`;
-    const enteredName = window.prompt('Ime nove uporabniške konfiguracije', defaultName);
-    if (enteredName === null) {
+    setSaveConfigurationName(defaultUserConfigurationName(currentResult));
+    setPendingSaveResult(currentResult);
+    setError(null);
+    setManualLibraryError(null);
+  };
+
+  const cancelSaveUserConfiguration = () => {
+    if (isSavingUserConfiguration) {
       return;
     }
-    const name = enteredName.trim() || defaultName;
+    setPendingSaveResult(null);
+    setSaveConfigurationName('');
+  };
+
+  const confirmSaveUserConfiguration = async () => {
+    if (!pendingSaveResult) {
+      return;
+    }
+    const currentResult = pendingSaveResult;
+    const defaultName = defaultUserConfigurationName(currentResult);
+    const name = saveConfigurationName.trim() || defaultName;
     setIsSavingUserConfiguration(true);
     setError(null);
     setManualLibraryError(null);
     try {
       const saved = await saveUserConfiguration({ name, result: currentResult });
-      const library = await getManualConfigurations();
-      setManualLibrary(library);
+      if (manualLibrary) {
+        setManualLibrary({
+          ...manualLibrary,
+          configurations: [saved, ...manualLibrary.configurations.filter((item) => item.id !== saved.id)],
+        });
+      } else {
+        setManualLibrary(await getManualConfigurations());
+      }
       setManualDetail(saved);
       setSelectedManualConfigId(saved.id);
       setManualResultConfigId(saved.id);
+      setPendingSaveResult(null);
+      setSaveConfigurationName('');
       setActiveTab('manual-configs');
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Napaka pri shranjevanju uporabniške konfiguracije.');
@@ -7165,8 +7489,6 @@ export default function App() {
     const baseSettings: CalculatorSettings = {
       ...settings,
       include_required_shift_leaders: true,
-      include_night_fl_requirement: false,
-      required_night_fl_count: 0,
     };
     if (!configuration?.manual_schedule) {
       return baseSettings;
@@ -7179,34 +7501,6 @@ export default function App() {
       fmp_sector_limit: manualRoleSectorLimit(configuration, 'FMP', baseSettings.fmp_sector_limit),
     };
   }, [settings]);
-
-  const payloadFromManualConfiguration = useCallback((
-    configuration: ManualConfigurationDetail,
-    requestedSectorCounts: number[],
-  ): CalculatorRequest => {
-    const manualSettings = settingsForManualConfiguration(configuration);
-    return {
-      calculation_mode: 'staff_to_coverage',
-      total_people: configuration.parsed_total,
-      fl_count: configuration.license_counts.FL,
-      aps_count: configuration.license_counts.APS,
-      acs_count: configuration.license_counts.ACS,
-      include_fmp: false,
-      fmp_shift_mode: 'fixed',
-      fmp_shift: DEFAULT_FMP_SHIFT,
-      settings: manualSettings,
-      requested_sector_counts: requestedSectorCounts,
-      fixed_staff: filterFixedStaffForActiveShifts(configuration.fixed_staff, manualSettings),
-      locked_staff: [],
-      officer_staff: filterOfficerStaffForActiveShifts(configuration.officer_staff, manualSettings),
-      office_pool: [],
-      license_mix_percent: null,
-      include_pareto: false,
-      prefer_minimal_fl: false,
-      office_fallback_mode: 'auto',
-      preferred_manual_configuration_id: configuration.id,
-    };
-  }, [settingsForManualConfiguration]);
 
   const sectorDemandFromManualConfiguration = useCallback((configuration: ManualConfigurationDetail): number[] | null => {
     const hourlyCoverage = configuration.manual_schedule?.hourly_coverage;
@@ -7281,20 +7575,6 @@ export default function App() {
     setActiveTab('calculator');
   };
 
-  const runManualConfigurationAgainstDemand = async (configuration: ManualConfigurationDetail) => {
-    const requestedSectorCounts = applyManualConfigurationSectorDemand(configuration) ?? effectiveSectorDemand;
-    const payload = payloadFromManualConfiguration(configuration, requestedSectorCounts);
-    setManualResultConfigId(configuration.id);
-    setCalculationMode('staff_to_coverage');
-    setWhatIfSummary(
-      configuration.manual_schedule
-        ? `Ročna konfiguracija ${configuration.name} proti Excel odprtosti`
-        : `Ročna konfiguracija ${configuration.name} proti aktivni odprtosti`,
-    );
-    setActiveTab('calculator');
-    await startCalculationFromPayload(payload, true);
-  };
-
   const runManualConfigurationOneDownCheck = async (configuration: ManualConfigurationDetail) => {
     applyManualConfigurationSectorDemand(configuration);
     setOneDownConfigId(configuration.id);
@@ -7331,6 +7611,7 @@ export default function App() {
   };
 
   const runShiftWhatIf = async (person: VirtualPerson, shift: string) => {
+    setContinuationComparison(null);
     if (!result) {
       setError('What-if je na voljo šele po izračunu.');
       return;
@@ -7424,9 +7705,10 @@ export default function App() {
 
   const cancelCurrentCalculation = async (pauseForReview = false) => {
     const jobId = activeJobIdRef.current;
-    if (!jobId) {
+    if (!jobId || cancelAction !== null || jobStatus?.cancel_requested) {
       return;
     }
+    setCancelAction(pauseForReview ? 'review' : 'current');
     showDecisionAfterCancelRef.current = pauseForReview;
 
     try {
@@ -7438,6 +7720,7 @@ export default function App() {
       setCalculationProgress(status.progress);
       if (status.status === 'finished') {
         stopPolling();
+        setCancelAction(null);
         const currentResult = await loadJobResult(jobId, status.best_result_version);
         setCalculationProgress(100);
         setIsLoading(false);
@@ -7455,6 +7738,8 @@ export default function App() {
             currentResult,
             reason: 'time-limit',
           });
+        } else if (status.cancel_requested) {
+          setCalculationNotice('Izračun je prekinjen. Prikazana je zadnja najdena rešitev.');
         }
         showDecisionAfterCancelRef.current = false;
         activeJobIdRef.current = null;
@@ -7463,10 +7748,20 @@ export default function App() {
 
       if (status.status === 'failed') {
         stopPolling();
+        setCancelAction(null);
         if (status.best_result_available) {
           await loadJobResult(jobId, status.best_result_version);
         }
-        setError(status.error ?? status.message ?? 'Izračun je bil preklican.');
+        if (status.cancel_requested) {
+          setError(null);
+          setCalculationNotice(
+            status.best_result_available
+              ? 'Izračun je prekinjen. Prikazana je zadnja najdena rešitev.'
+              : 'Izračun je prekinjen pred prvo najdeno rešitvijo.',
+          );
+        } else {
+          setError(status.error ?? status.message ?? 'Izračun se je ustavil.');
+        }
         setIsLoading(false);
         showDecisionAfterCancelRef.current = false;
         activeJobIdRef.current = null;
@@ -7478,6 +7773,7 @@ export default function App() {
       }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Napaka pri preklicu izračuna.');
+      setCancelAction(null);
       showDecisionAfterCancelRef.current = false;
     }
   };
@@ -7491,17 +7787,33 @@ export default function App() {
     await startCalculationFromPayload(payload, false);
   };
 
+  const preserveContinuationBaseline = (
+    decision: TimeLimitDecision,
+    actionLabel: string,
+  ): CalculatorResponse | null => {
+    const baseline = decision.currentResult ?? result;
+    if (baseline) {
+      setContinuationComparison({
+        actionLabel,
+        baseline,
+        restartPlan: decision.restartPlan,
+      });
+    }
+    return baseline;
+  };
+
   const continueAfterTimeLimit = async () => {
     if (!timeLimitDecision) {
       return;
     }
-    const plan = timeLimitDecision.restartPlan;
+    const decision = timeLimitDecision;
+    const plan = decision.restartPlan;
+    const extraSeconds = 300;
+    const warmStartResult = preserveContinuationBaseline(decision, 'Nadaljevanje istega modela') ?? result;
+    const warmStartSnapshotId = decision.status.warm_start_snapshot_id;
     setTimeLimitDecision(null);
 
     if (plan.kind === 'calculator') {
-      const extraSeconds = Math.max(60, plan.payload.settings.cp_sat_time_limit_seconds);
-      const warmStartResult = timeLimitDecision.currentResult ?? result;
-      const warmStartSnapshotId = timeLimitDecision.status.warm_start_snapshot_id;
       const payload = clonePayloadForRegularContinuation(plan.payload, extraSeconds, warmStartResult, warmStartSnapshotId);
       setWhatIfSummary(
         warmStartSnapshotId || warmStartResult
@@ -7513,20 +7825,18 @@ export default function App() {
     }
 
     if (plan.kind === 'complete') {
-      const extraSeconds = Math.max(60, plan.payload.settings.cp_sat_time_limit_seconds);
-      const warmStartResult = timeLimitDecision.currentResult ?? result ?? plan.currentResult;
-      const warmStartSnapshotId = timeLimitDecision.status.warm_start_snapshot_id;
-      const payload = clonePayloadForRegularContinuation(plan.payload, extraSeconds, warmStartResult, warmStartSnapshotId);
+      const completeWarmStart = warmStartResult ?? plan.currentResult;
+      const payload = clonePayloadForRegularContinuation(plan.payload, extraSeconds, completeWarmStart, warmStartSnapshotId);
       const nextTimeLimit = Math.min(120, plan.timeLimitSeconds + Math.max(8, plan.timeLimitSeconds));
       setWhatIfSummary(
-        warmStartSnapshotId || warmStartResult
+        warmStartSnapshotId || completeWarmStart
           ? `Nadaljevanje dopolnitve +${extraSeconds} s iz začasne najboljše rešitve`
           : `Nadaljevanje dopolnitve +${extraSeconds} s brez operativnega office fallbacka`,
       );
       await startJobWithProgress({
         startJob: () => startCompleteConfigurationJob({
           request: payload,
-          current_result: warmStartResult,
+          current_result: completeWarmStart,
           time_limit_seconds: nextTimeLimit,
         }),
         clearResult: false,
@@ -7557,16 +7867,95 @@ export default function App() {
     });
   };
 
+  const tryLeaderCrisisAfterTimeLimit = async (maxExceptionHours: number) => {
+    if (!timeLimitDecision) {
+      return;
+    }
+    const decision = timeLimitDecision;
+    const plan = decision.restartPlan;
+    if (plan.kind === 'one-down') {
+      return;
+    }
+    const baseline = preserveContinuationBaseline(
+      decision,
+      `Krizni VI/FMP poskus: omejitev ${maxExceptionHours} ${maxExceptionHours === 1 ? 'ura' : 'ur'}`,
+    );
+    const warmStartSnapshotId = decision.status.warm_start_snapshot_id;
+    const payload = clonePayloadForLeaderCrisis(
+      plan.payload,
+      maxExceptionHours,
+      baseline,
+      warmStartSnapshotId,
+    );
+    setTimeLimitDecision(null);
+    setWhatIfSummary(`Krizni VI/FMP poskus; omejitev kriznih ur je ${maxExceptionHours}, rezultat pa mora ohraniti doseženi SH.`);
+
+    if (plan.kind === 'complete') {
+      await startJobWithProgress({
+        startJob: () => startCompleteConfigurationJob({
+          request: payload,
+          current_result: baseline ?? plan.currentResult,
+          time_limit_seconds: Math.min(120, Math.max(8, plan.timeLimitSeconds)),
+        }),
+        clearResult: false,
+        payload,
+        restartPlan: { ...plan, payload },
+        queuedMessage: 'Čaka v vrsti za omejen krizni VI/FMP poskus.',
+        errorMessage: 'Napaka pri kriznem VI/FMP poskusu.',
+      });
+      return;
+    }
+    await startCalculationFromPayload(payload, false);
+  };
+
+  const tryEmergencyShiftAfterTimeLimit = async (shiftCode: string) => {
+    if (!timeLimitDecision) {
+      return;
+    }
+    const decision = timeLimitDecision;
+    const plan = decision.restartPlan;
+    if (plan.kind === 'one-down') {
+      return;
+    }
+    const baseline = preserveContinuationBaseline(decision, `Krizni poskus z izmeno ${shiftCode}`);
+    const payload = clonePayloadForEmergencyShift(
+      plan.payload,
+      shiftCode,
+      baseline,
+      decision.status.warm_start_snapshot_id,
+    );
+    setTimeLimitDecision(null);
+    setWhatIfSummary(`Izmena ${shiftCode} je začasno omogočena samo za ta nadaljevalni poskus.`);
+
+    if (plan.kind === 'complete') {
+      await startJobWithProgress({
+        startJob: () => startCompleteConfigurationJob({
+          request: payload,
+          current_result: baseline ?? plan.currentResult,
+          time_limit_seconds: Math.min(120, Math.max(8, plan.timeLimitSeconds)),
+        }),
+        clearResult: false,
+        payload,
+        restartPlan: { ...plan, payload },
+        queuedMessage: `Čaka v vrsti za krizni poskus z izmeno ${shiftCode}.`,
+        errorMessage: `Napaka pri kriznem poskusu z izmeno ${shiftCode}.`,
+      });
+      return;
+    }
+    await startCalculationFromPayload(payload, false);
+  };
+
   const tryOfficeFallbackAfterTimeLimit = async (officeSelection: OfficeFallbackSelection) => {
     if (!timeLimitDecision) {
       return;
     }
-    const plan = timeLimitDecision.restartPlan;
+    const decision = timeLimitDecision;
+    const plan = decision.restartPlan;
     if (plan.kind === 'one-down') {
       return;
     }
-    const warmStartResult = timeLimitDecision.currentResult ?? result;
-    const warmStartSnapshotId = timeLimitDecision.status.warm_start_snapshot_id;
+    const warmStartResult = preserveContinuationBaseline(decision, 'Preizkus z operativnim office') ?? result;
+    const warmStartSnapshotId = decision.status.warm_start_snapshot_id;
     const payload = clonePayloadForOfficeFallback(plan.payload, officeSelection, warmStartResult, warmStartSnapshotId);
     if (!hasOfficeFallbackSelection(officeSelection)) {
       setTimeLimitDecision(null);
@@ -7610,7 +7999,33 @@ export default function App() {
   };
 
   const keepCurrentTimeLimitResult = () => {
+    setCalculationNotice(
+      timeLimitDecision?.reason === 'manual-stop'
+        ? 'Izračun je prekinjen. Obdržana je zadnja najdena rešitev.'
+        : 'Obdržana je trenutno najboljša rešitev.',
+    );
+    setContinuationComparison(null);
     setTimeLimitDecision(null);
+  };
+
+  const acceptContinuationResult = () => {
+    setContinuationComparison(null);
+    setCalculationNotice('Uporabljen je rezultat nadaljevalnega poskusa.');
+  };
+
+  const restoreContinuationBaseline = () => {
+    if (!continuationComparison) {
+      return;
+    }
+    setResult(continuationComparison.baseline);
+    lastRestartPlanRef.current = continuationComparison.restartPlan;
+    lastCalculationPayloadRef.current = continuationComparison.restartPlan.kind === 'one-down'
+      ? null
+      : continuationComparison.restartPlan.payload;
+    setWhatIfSummary(null);
+    setTimeLimitDecision(null);
+    setContinuationComparison(null);
+    setCalculationNotice('Obdržana je prejšnja rešitev pred nadaljevalnim poskusom.');
   };
 
   const cancelCurrentParetoAnalysis = async () => {
@@ -7658,7 +8073,17 @@ export default function App() {
 
   const programLabel = activeTab === 'analysis' || activeTab === 'theory'
     ? '2 / Napoved SH'
-    : '1 / Kalkulator';
+    : activeTab === 'future'
+      ? '3 / 15-min model'
+      : '1 / Kalkulator';
+  const cancellationInProgress = isCancellationInProgress(
+    cancelAction,
+    jobStatus?.cancel_requested === true,
+  );
+  const cancellationDetail = cancellationDetailFor(
+    cancelAction,
+    jobStatus?.best_result_available === true,
+  );
 
   return (
     <main className="app-shell">
@@ -7679,6 +8104,9 @@ export default function App() {
       <nav className="tabs" aria-label="Glavna navigacija">
         <button className={activeTab === 'calculator' ? 'active' : ''} onClick={() => setActiveTab('calculator')} type="button">
           Kalkulator sektorskih ur
+        </button>
+        <button className={activeTab === 'future' ? 'active' : ''} onClick={() => setActiveTab('future')} type="button">
+          Futuristični kalkulator
         </button>
         <button className={activeTab === 'settings' ? 'active' : ''} onClick={() => setActiveTab('settings')} type="button">
           Nastavitev pravil
@@ -7704,9 +8132,12 @@ export default function App() {
         />
       </div>
 
-      {activeTab === 'settings' ? (
+      {activeTab === 'future' ? (
+        <FutureCalculator settings={settings} hourlyDemand={effectiveSectorDemand} />
+      ) : activeTab === 'settings' ? (
         <SettingsPanel
           settings={settings}
+          defaultExtraNightA21FlCount={Math.max(0, defaultSettings.required_night_fl_count - 1)}
           saveState={settingsSaveState}
           onChange={(nextSettings) => {
             setSettings(nextSettings);
@@ -7787,6 +8218,7 @@ export default function App() {
                 max={80}
                 value={totalPeople}
                 onChange={(value) => updateCounts(value, flCount, apsCount)}
+                helper="Točno število rednih ljudi, ki bo prikazano v planu. Neuporabljeni ostanejo v rezultatu z 0 sektorskimi urami."
               />
               <NumberField
                 label="FL licence"
@@ -7908,7 +8340,7 @@ export default function App() {
                   {fmpShiftMode === 'fixed' ? (
                     <label className="field fmp-shift-field">
                       FMP izmena
-                      <select value={fmpShift} onChange={(event) => setFmpShift(event.target.value)}>
+                      <select value={selectedFmpShift} onChange={(event) => setFmpShift(event.target.value)}>
                         {fmpShiftOptions.map((shift) => (
                           <option key={shift} value={shift}>{shift}</option>
                         ))}
@@ -8062,14 +8494,14 @@ export default function App() {
             {isLoading ? (
               <div className="calculation-progress" role="status" aria-live="polite">
                 <div className="progress-row">
-                  <span>{jobStatus ? jobStatusLabels[jobStatus.status] : 'Oddajam izračun ...'}</span>
+                  <span>{cancellationInProgress ? 'Prekinitev v teku' : jobStatus ? jobStatusLabels[jobStatus.status] : 'Oddajam izračun ...'}</span>
                   <strong>{calculationProgress}%</strong>
                 </div>
                 <div className="progress-track">
                   <div className="progress-fill" style={{ width: `${calculationProgress}%` }} />
                 </div>
                 <div className="progress-meta">
-                  <span>{jobStatus ? formatProgressMessage(jobStatus) : 'Pripravljam job v ozadju.'}</span>
+                  <span>{cancellationInProgress ? 'Čakam na varen zaključek solverja.' : jobStatus ? formatProgressMessage(jobStatus) : 'Pripravljam job v ozadju.'}</span>
                   <span>{jobStatus ? `${jobStatus.elapsed_seconds.toFixed(1)} s` : '0.0 s'}</span>
                 </div>
                 {jobStatus ? (
@@ -8077,37 +8509,73 @@ export default function App() {
                     {formatBestResultSummary(jobStatus) ?? 'Najboljša rešitev še ni najdena.'}
                   </div>
                 ) : null}
-                {jobStatus ? <ProgressPhase status={jobStatus} /> : null}
-                {jobStatus && formatSolverSummary(jobStatus) ? (
-                  <div className="progress-solver">{formatSolverSummary(jobStatus)}</div>
-                ) : null}
-                {jobStatus && formatPatternCacheStatus(jobStatus) ? (
-                  <div className="progress-pattern">{formatPatternCacheStatus(jobStatus)}</div>
-                ) : null}
-                {jobStatus && formatPatternLimitStatus(jobStatus) ? (
-                  <div className="progress-pattern">{formatPatternLimitStatus(jobStatus)}</div>
-                ) : null}
-                {jobStatus && formatPatternCheckedLimits(jobStatus) ? (
-                  <div className="progress-pattern checked-limits">{formatPatternCheckedLimits(jobStatus)}</div>
-                ) : null}
+                {cancellationInProgress ? (
+                  <div className="progress-cancel-state">
+                    <strong>Zahteva za prekinitev je poslana</strong>
+                    <span>{cancellationDetail}</span>
+                  </div>
+                ) : (
+                  <>
+                    {jobStatus ? <ProgressPhase status={jobStatus} /> : null}
+                    {jobStatus && formatSolverSummary(jobStatus) ? (
+                      <div className="progress-solver">{formatSolverSummary(jobStatus)}</div>
+                    ) : null}
+                    {jobStatus && formatPatternCacheStatus(jobStatus) ? (
+                      <div className="progress-pattern">{formatPatternCacheStatus(jobStatus)}</div>
+                    ) : null}
+                    {jobStatus && formatPatternLimitStatus(jobStatus) ? (
+                      <div className="progress-pattern">{formatPatternLimitStatus(jobStatus)}</div>
+                    ) : null}
+                    {jobStatus && formatPatternCheckedLimits(jobStatus) ? (
+                      <div className="progress-pattern checked-limits">{formatPatternCheckedLimits(jobStatus)}</div>
+                    ) : null}
+                  </>
+                )}
                 <div className="progress-actions">
-                  <button className="secondary-button compact-button cancel-button" onClick={() => void cancelCurrentCalculation(true)} type="button">
-                    Ustavi in odloči
-                  </button>
-                  <button className="secondary-button compact-button cancel-button" onClick={() => void cancelCurrentCalculation(false)} type="button">
-                    Prekini in uporabi najboljšo
-                  </button>
+                  {cancellationInProgress ? (
+                    <button className="secondary-button compact-button cancel-button" disabled type="button">
+                      Prekinitev v teku ...
+                    </button>
+                  ) : jobStatus?.best_result_available ? (
+                    <>
+                      <button className="secondary-button compact-button cancel-button" onClick={() => void cancelCurrentCalculation(true)} type="button">
+                        Ustavi in pokaži možnosti
+                      </button>
+                      <button className="secondary-button compact-button cancel-button" onClick={() => void cancelCurrentCalculation(false)} type="button">
+                        Prekini in uporabi trenutno
+                      </button>
+                    </>
+                  ) : (
+                    <button className="secondary-button compact-button cancel-button" onClick={() => void cancelCurrentCalculation(false)} type="button">
+                      Prekini izračun
+                    </button>
+                  )}
                 </div>
               </div>
             ) : null}
             {timeLimitDecision ? (
               <TimeLimitDecisionPanel
+                key={`${timeLimitDecision.status.job_id}:${timeLimitDecision.reason}`}
                 decision={timeLimitDecision}
                 isBusy={isLoading || isParetoLoading}
                 onContinue={() => void continueAfterTimeLimit()}
+                onTryLeaderCrisis={(maxExceptionHours) => void tryLeaderCrisisAfterTimeLimit(maxExceptionHours)}
                 onTryOfficeFallback={(selectedOfficePool) => void tryOfficeFallbackAfterTimeLimit(selectedOfficePool)}
+                onTryEmergencyShift={(shiftCode) => void tryEmergencyShiftAfterTimeLimit(shiftCode)}
                 onKeepCurrent={keepCurrentTimeLimitResult}
               />
+            ) : null}
+            {continuationComparison ? (
+              <ContinuationComparisonPanel
+                comparison={continuationComparison}
+                candidate={result}
+                isBusy={isLoading}
+                onAcceptCandidate={acceptContinuationResult}
+                onRestoreBaseline={restoreContinuationBaseline}
+              />
+            ) : null}
+            {calculationNotice && !isLoading ? (
+              <div className="calculation-notice" role="status" aria-live="polite">{calculationNotice}</div>
             ) : null}
             {isParetoLoading ? (
               <div className="calculation-progress pareto-progress" role="status" aria-live="polite">
@@ -8177,6 +8645,7 @@ export default function App() {
               setWhatIfSummary(null);
               setPausedPayload(null);
               setTimeLimitDecision(null);
+              setContinuationComparison(null);
             }}
             onEditResult={(updater) => {
               setResult((current) => (current ? updater(current) : current));
@@ -8188,6 +8657,16 @@ export default function App() {
             onOpenComparison={() => setActiveTab('comparison')}
           />
         </div>
+      ) : null}
+      {pendingSaveResult ? (
+        <SaveConfigurationDialog
+          duplicateWarning={configurationComparison?.duplicate_warning ?? null}
+          isSaving={isSavingUserConfiguration}
+          name={saveConfigurationName}
+          onCancel={cancelSaveUserConfiguration}
+          onConfirm={() => void confirmSaveUserConfiguration()}
+          onNameChange={setSaveConfigurationName}
+        />
       ) : null}
     </main>
   );

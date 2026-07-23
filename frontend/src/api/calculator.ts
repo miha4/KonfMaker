@@ -18,6 +18,7 @@ import type {
   PatternLibraryProfile,
   SaveUserConfigurationRequest,
 } from '../types/calculator';
+import type { FutureCalculatorRequest, FutureCalculatorResponse } from '../types/futureCalculator';
 
 function resolveApiBaseUrl(): string {
   const configuredUrl = import.meta.env.VITE_API_BASE_URL?.trim();
@@ -46,7 +47,20 @@ async function requestJson<T>(path: string, options?: RequestInit): Promise<T> {
   });
 
   if (!response.ok) {
-    const message = await response.text();
+    const responseText = await response.text();
+    let message = responseText;
+    try {
+      const payload = JSON.parse(responseText) as { detail?: unknown };
+      if (typeof payload.detail === 'string') {
+        message = payload.detail;
+      } else if (Array.isArray(payload.detail)) {
+        message = payload.detail
+          .map((item) => (typeof item === 'object' && item && 'msg' in item ? String(item.msg) : String(item)))
+          .join(' ');
+      }
+    } catch {
+      // Non-JSON errors are already suitable for display as plain text.
+    }
     if (response.status === 504) {
       throw new Error(
         'API je prekinil zahtevo zaradi časovne omejitve (504). To običajno pomeni, da je bil izračun predolgo v teku, ne nujno da rešitev ne obstaja.',
@@ -67,6 +81,24 @@ export function calculateSectorHours(payload: CalculatorRequest): Promise<Calcul
     method: 'POST',
     body: JSON.stringify(payload),
   });
+}
+
+export function calculateFutureSectorHours(payload: FutureCalculatorRequest): Promise<FutureCalculatorResponse> {
+  return requestJson<FutureCalculatorResponse>('/api/future-calculator', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function startFutureCalculationJob(payload: FutureCalculatorRequest): Promise<CalculationJobStart> {
+  return requestJson<CalculationJobStart>('/api/jobs/future-calculator', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getFutureCalculationJobResult(jobId: string): Promise<FutureCalculatorResponse> {
+  return requestJson<FutureCalculatorResponse>(`/api/jobs/${encodeURIComponent(jobId)}/result`);
 }
 
 export function completeConfiguration(payload: CompleteConfigurationRequest): Promise<CompleteConfigurationResult> {

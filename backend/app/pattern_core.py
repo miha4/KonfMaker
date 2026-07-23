@@ -118,6 +118,8 @@ def can_use_pattern_minimum_core(request: CalculatorRequest) -> bool:
         and not request.locked_staff
         and not request.officer_staff
         and not request.office_pool
+        and request.continuation_min_sector_hours is None
+        and request.leader_exception_mode == "forbid"
         and request.requested_sector_counts is not None
     )
 
@@ -653,6 +655,7 @@ def _solve_pattern_model(
     slot_assignment_vars: dict[int, dict[str, cp_model.IntVar | int]] = {}
     flexible_fl_terms: list[cp_model.LinearExpr] = []
     fmp_vi_overlap_terms: list[cp_model.LinearExpr] = []
+    fmp_vi_overlap_counts: list[cp_model.IntVar] = []
     for slot, sector_count in enumerate(target_sector_counts):
         requirements = sector_seat_requirements(sector_count)
         available = {
@@ -710,7 +713,14 @@ def _solve_pattern_model(
             model.Add(overlap_count <= vi_on_slot)
             model.Add(overlap_count <= people_limit * fmp_on_slot)
             model.Add(overlap_count >= vi_on_slot - people_limit * (1 - fmp_on_slot))
+            fmp_vi_overlap_counts.append(overlap_count)
             fmp_vi_overlap_terms.append(FMP_LEADER_OVERLAP_PENALTY * overlap_count)
+
+    if fmp_vi_overlap_counts:
+        if request.leader_exception_mode == "allow":
+            model.Add(sum(fmp_vi_overlap_counts) <= request.max_leader_exception_hours)
+        else:
+            model.Add(sum(fmp_vi_overlap_counts) == 0)
 
     if optimize_quality:
         ratio_targets = _license_ratio_targets(request)
@@ -747,7 +757,7 @@ def _solve_pattern_model(
 
     solver = cp_model.CpSolver()
     solver.parameters.num_search_workers = CP_SAT_WORKERS
-    solver.parameters.random_seed = 1
+    solver.parameters.random_seed = request.solver_random_seed
     stop_event = Event()
     monitor: Thread | None = None
     if cancel_callback is not None:
@@ -965,6 +975,12 @@ def _response_from_pattern_solution(
     unused_people = len([person for person in people if person.sector_hours == 0])
     utilization_percent = round((scheduled_person_hours / selected_capacity) * 100) if selected_capacity > 0 else 0
     people_by_id = {person.id: person for person in people}
+    role_by_id = {person.id: (person.role or "").upper() for person in people}
+    fmp_vi_overlap_hours = 0
+    for coverage in hourly_coverage:
+        fmp_count = sum(1 for worker_id in coverage.workers if role_by_id.get(worker_id) == "FMP")
+        vi_count = sum(1 for worker_id in coverage.workers if role_by_id.get(worker_id) in {"V1", "V2", "V3"})
+        fmp_vi_overlap_hours += fmp_count * vi_count
     response_people = [
         VirtualPerson(
             id=person.id,
@@ -1005,6 +1021,9 @@ def _response_from_pattern_solution(
         solver_gap_to_upper_bound=0 if proven_minimum else None,
         solver_status=solve_result.status,
         solver_optimality_gap_percent=None,
+        leader_edge_exception_hours=0,
+        fmp_vi_overlap_hours=fmp_vi_overlap_hours,
+        crisis_exception_hours=fmp_vi_overlap_hours,
         missing_sector_hours=0,
         baseline_min_people=len(people),
         baseline_min_people_formula="Exact-cover pattern model je preverjal limite ljudi po vrsti in dokazoval neizvedljivost manjših limitov.",

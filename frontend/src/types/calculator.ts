@@ -75,6 +75,10 @@ export interface CalculatorRequest {
   include_pareto: boolean;
   prefer_minimal_fl: boolean;
   office_fallback_mode: 'auto' | 'disabled' | 'force';
+  leader_exception_mode: 'forbid' | 'allow';
+  max_leader_exception_hours: number;
+  continuation_min_sector_hours: number | null;
+  solver_random_seed: number;
   preferred_manual_configuration_id?: string | null;
   warm_start?: {
     people: VirtualPerson[];
@@ -145,6 +149,9 @@ export interface CalculatorResponse {
   solver_solution_count: number;
   solver_optimality_gap_percent: number | null;
   solver_stop_reason: string | null;
+  leader_edge_exception_hours: number;
+  fmp_vi_overlap_hours: number;
+  crisis_exception_hours: number;
   missing_sector_hours: number;
   baseline_min_people: number;
   baseline_min_people_formula: string | null;
@@ -536,6 +543,7 @@ export interface CalculationJobStatus {
   message: string;
   elapsed_seconds: number;
   error: string | null;
+  cancel_requested: boolean;
   best_result_available: boolean;
   best_result_version: number;
   best_max_sector_hours: number | null;

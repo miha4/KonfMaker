@@ -137,7 +137,7 @@ To so pravila, ki jih kalibracija ne sme kršiti.
 - Vloge imajo limite sektorskih ur:
   `V1` privzeto max `1`,
   `V2` privzeto max `1`,
-  `V3` privzeto max `2`,
+  `V3` privzeto max `4`,
   `FMP` privzeto max `6`.
 
 - Vodje izmen so vedno `FL`.
@@ -147,8 +147,8 @@ To so pravila, ki jih kalibracija ne sme kršiti.
   doda oziroma zahteva `V1/A7`, `V2/A14`, `V3/A21`, vsi `FL`.
 
 - Nočna FL zahteva:
-  če je vključena, omeji nočno FL zasedbo na `V3 + dodatni A21 FL` do nastavljenega števila.
-  Privzeto je skupno `4` FL za noč, kjer je V3 že eden od njih.
+  če je vključena, zahteva nastavljeno število dodatnih `A21/FL` poleg `V3`.
+  Privzeto so zahtevani `V3 + 3× A21/FL`, torej skupaj `4` nočni FL.
 
 - Če je `FMP` vključen:
   doda se `FMP/A9/FL` kot posebna vloga.
@@ -188,8 +188,8 @@ To so stvari, ki jih lahko kalibrirava brez kršenja pravil.
 - Office delo ima dodatno kazen po uri:
   office je bolj zaželen na začetku ali koncu office izmene, manj v sredini.
 
-- Model kaznuje večje število izbranih ljudi.
-  Pri enaki pokritosti raje uporabi manj ljudi.
+- V načinu `Odprtost sektorjev` model kaznuje večje število izbranih ljudi.
+  Če limit ni vklopljen, pri enaki pokritosti raje uporabi manj ljudi; v načinu `Število ljudi` pa ohrani točno vpisano število.
 
 - Model kaznuje več neizkoriščene kapacitete.
   Pri enakem številu ljudi raje uporabi bolj “polno” sestavo.

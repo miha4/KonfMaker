@@ -1,13 +1,18 @@
+import json
 import time
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import app.calculator as calculator_module
+import app.config_library as config_library_module
+import app.jobs as jobs_module
 from fastapi.testclient import TestClient
 
 from app.calculator import (
     DEFAULT_OFFICER_SHIFTS,
     DEFAULT_SHIFTS,
+    CalculationCancelled,
     SolverSnapshot,
     add_fixed_staff_people,
     add_locked_staff_people,
@@ -21,6 +26,7 @@ from app.calculator import (
     PersonState,
     role_allows_sector_slot,
     role_edge_exception_penalty,
+    schedule_leader_exception_hours,
     shift_map_for_request,
     solve_schedule_with_cp_sat,
 )
@@ -41,6 +47,7 @@ from app.models import (
     CompleteConfigurationRequest,
     HourlyCoverage,
     SectorAssignment,
+    SaveUserConfigurationRequest,
     VirtualPerson,
 )
 from app.pattern_core import build_pattern_library
@@ -145,6 +152,10 @@ def make_request(
     prefer_minimal_fl=False,
     fmp_shift_mode="fixed",
     fmp_shift="A9",
+    leader_exception_mode="forbid",
+    max_leader_exception_hours=0,
+    continuation_min_sector_hours=None,
+    solver_random_seed=1,
 ):
     return CalculatorRequest(
         calculation_mode=calculation_mode,
@@ -181,6 +192,10 @@ def make_request(
         license_mix_percent=license_mix_percent,
         include_pareto=include_pareto,
         prefer_minimal_fl=prefer_minimal_fl,
+        leader_exception_mode=leader_exception_mode,
+        max_leader_exception_hours=max_leader_exception_hours,
+        continuation_min_sector_hours=continuation_min_sector_hours,
+        solver_random_seed=solver_random_seed,
     )
 
 
@@ -261,6 +276,38 @@ def test_temp_warm_start_snapshot_is_consumed_once_and_deleted():
     assert consumer_job.consumed_warm_start_snapshot_id is None
 
 
+def test_calculation_job_applies_one_global_time_budget(monkeypatch):
+    job_id = "global-budget-test"
+    request = make_request(cp_sat_time_limit_seconds=1)
+    job = CalculationJob(
+        job_id=job_id,
+        kind="calculation",
+        status="queued",
+        progress=0,
+        message="queued",
+        created_at=_now(),
+        result=minimal_warm_start_result(),
+    )
+    jobs_module._jobs[job_id] = job
+    times = iter([0.0, 2.0, 2.0])
+
+    def fake_calculate(_request, *, progress_callback, cancel_callback, incumbent_callback):
+        assert progress_callback is not None
+        assert incumbent_callback is not None
+        assert cancel_callback is not None and cancel_callback() is True
+        raise CalculationCancelled("global budget")
+
+    monkeypatch.setattr(jobs_module, "monotonic", lambda: next(times))
+    monkeypatch.setattr(jobs_module, "calculate", fake_calculate)
+    try:
+        jobs_module._run_calculation_job(job_id, request)
+        assert job.status == "finished"
+        assert job.result is not None
+        assert job.solver_stop_reason == "skupni časovni limit izračuna (1 s) se je iztekel"
+    finally:
+        jobs_module._jobs.pop(job_id, None)
+
+
 def test_calculator_requires_minimum_fl():
     result = calculate(make_request(total=28, fl=5, acs=23, fmp=True))
     assert result.feasible is False
@@ -270,7 +317,7 @@ def test_calculator_requires_minimum_fl():
 def test_calculator_returns_generated_people_and_hours():
     result = calculate(make_request(cp_sat_time_limit_seconds=8))
     assert result.max_sector_hours > 0
-    assert 0 < len(result.people) <= 28
+    assert len(result.people) == 28
     assert sum(item.total for item in result.shift_summary) == len(result.people)
     assert len(result.hourly_coverage) == 24
     assert result.planned_people == len(result.people)
@@ -617,6 +664,9 @@ def test_user_configuration_can_be_deleted(monkeypatch, tmp_path):
     saved = save_response.json()
     saved_id = saved["id"]
     assert saved_id.startswith("user:")
+    stored_records = json.loads((tmp_path / "user_configs.json").read_text(encoding="utf-8"))["configurations"]
+    assert stored_records[0]["schema_version"] == 2
+    assert "result" not in stored_records[0]
 
     library_response = client.get("/api/manual-configurations")
     assert any(item["id"] == saved_id for item in library_response.json()["configurations"])
@@ -631,6 +681,45 @@ def test_user_configuration_can_be_deleted(monkeypatch, tmp_path):
 
     excel_delete_response = client.delete("/api/manual-configurations/1")
     assert excel_delete_response.status_code == 400
+
+
+def test_concurrent_user_configuration_saves_keep_both_records(monkeypatch, tmp_path):
+    library_path = tmp_path / "user_configs.json"
+    monkeypatch.setenv("KONFMAKER_USER_CONFIG_LIBRARY_JSON", str(library_path))
+    result = calculate(
+        make_request(
+            total=2,
+            fl=2,
+            aps=0,
+            acs=0,
+            fmp=False,
+            requested_sector_counts=[1] + [0] * 23,
+            include_required_shift_leaders=False,
+            include_night_fl_requirement=False,
+            required_night_fl_count=0,
+            cp_sat_time_limit_seconds=2,
+            cp_sat_no_improvement_seconds=0,
+        )
+    )
+    original_read = config_library_module._read_user_configuration_records
+
+    def slow_read():
+        records = original_read()
+        time.sleep(0.05)
+        return records
+
+    monkeypatch.setattr(config_library_module, "_read_user_configuration_records", slow_read)
+    payloads = [
+        SaveUserConfigurationRequest(name=f"Concurrent {index}", result=result)
+        for index in range(2)
+    ]
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        saved = list(executor.map(config_library_module.save_user_configuration, payloads))
+
+    stored = json.loads(library_path.read_text(encoding="utf-8"))["configurations"]
+    assert len(saved) == 2
+    assert {record["name"] for record in stored} == {"Concurrent 0", "Concurrent 1"}
 
 
 def test_manual_configuration_detail_includes_excel_schedule(monkeypatch, tmp_path):
@@ -686,7 +775,8 @@ def test_manual_configuration_focus_audit_endpoint(monkeypatch, tmp_path):
         "Vi1;1\n"
         "Vi2;1\n"
         "Vi3;1\n"
-        "A7;4\n",
+        "A7;4\n"
+        "A21;3\n",
         encoding="utf-8",
     )
     workbook_path = tmp_path / "Konfiguracije OKZP.xlsx"
@@ -816,6 +906,8 @@ def test_default_settings_include_officer_shifts():
     assert data["cp_sat_no_improvement_seconds"] == 180
     assert data["cp_sat_acceptable_sector_gap"] == 0
     assert data["cp_sat_min_auto_stop_coverage_percent"] == 95
+    assert data["include_night_fl_requirement"] is True
+    assert data["required_night_fl_count"] == 4
     assert data["v1_sector_limit"] == 1
     assert data["v2_sector_limit"] == 1
     assert data["v3_sector_limit"] == 4
@@ -1158,14 +1250,15 @@ def test_minimum_pattern_core_can_use_auto_fmp_without_shift_leaders():
     assert fmp_people[0].shift in {"A7", "A8", "A9", "A10", "A11"}
 
 
-def test_fmp_and_vi_overlap_is_soft_penalty_not_hard_block():
+def test_fmp_and_vi_overlap_is_only_available_in_limited_crisis_mode():
+    requested = [0, 1] + [0] * 22
     request = make_request(
         total=2,
         fl=2,
         aps=0,
         acs=0,
         fmp=False,
-        requested_sector_counts=[1] + [0] * 23,
+        requested_sector_counts=requested,
         include_required_shift_leaders=False,
         include_night_fl_requirement=False,
     )
@@ -1180,13 +1273,35 @@ def test_fmp_and_vi_overlap_is_soft_penalty_not_hard_block():
         {0, 1},
         request,
         shift_map,
-        [1] + [0] * 23,
+        requested,
         selected_total_cap=2,
     )
 
     assert solved is not None
     scheduled, _snapshot = solved
-    assert scheduled.total_hours == 1
+    assert scheduled.total_hours == 0
+
+    crisis_request = request.model_copy(
+        update={
+            "leader_exception_mode": "allow",
+            "max_leader_exception_hours": 1,
+        }
+    )
+    crisis_solved = solve_schedule_with_cp_sat(
+        candidates,
+        {0, 1},
+        crisis_request,
+        shift_map,
+        requested,
+        selected_total_cap=2,
+    )
+
+    assert crisis_solved is not None
+    crisis_schedule, _snapshot = crisis_solved
+    assert crisis_schedule.total_hours == 1
+    edge_hours, overlap_hours = schedule_leader_exception_hours(crisis_schedule, shift_map)
+    assert edge_hours == 0
+    assert overlap_hours == 1
 
 
 def test_manual_schedule_role_limits_do_not_lower_defaults():
@@ -1203,6 +1318,8 @@ def test_manual_schedule_role_limits_do_not_lower_defaults():
     assert settings.v1_sector_limit == 3
     assert settings.v2_sector_limit == 1
     assert settings.v3_sector_limit == 4
+    assert settings.include_night_fl_requirement is True
+    assert settings.required_night_fl_count == 4
 
 
 def test_locked_staff_preserves_label_and_counts_against_people():
@@ -1590,9 +1707,41 @@ def test_fixed_staff_is_included_in_staff_to_coverage_plan():
         )
     )
 
-    assert len(result.people) <= 30
+    assert len(result.people) == 30
     assert sum(1 for person in result.people if person.role == "FIX" and person.shift == "A12" and person.license == "ACS") == 2
     assert any(row.shift == "FIX/A12" and row.acs == 2 for row in result.shift_summary)
+
+
+def test_staff_to_coverage_keeps_exact_people_count_with_one_enabled_shift():
+    requested = [0] * 24
+    requested[0] = 1
+    request = make_request(
+        total=3,
+        fl=3,
+        aps=0,
+        acs=0,
+        fmp=False,
+        requested_sector_counts=requested,
+        include_required_shift_leaders=False,
+        include_night_fl_requirement=False,
+        required_night_fl_count=0,
+        cp_sat_no_improvement_seconds=0,
+    )
+    settings = request.settings.model_copy(
+        update={
+            "shifts": [
+                shift.model_copy(update={"enabled": shift.code == "A7"})
+                for shift in request.settings.shifts
+            ]
+        }
+    )
+
+    result = calculate(request.model_copy(update={"settings": settings}))
+
+    assert result.feasible is True
+    assert result.planned_people == 3
+    assert len(result.people) == 3
+    assert result.unused_people == 1
 
 
 def test_fixed_staff_counts_must_fit_entered_license_totals():

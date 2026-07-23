@@ -12,6 +12,7 @@ frontend/.vite/
 *.tsbuildinfo
 backend/.pattern-cache/
 backend/.desktop-venv/
+data/user_configurations.local.json
 backend/build/
 backend/dist/
 release/

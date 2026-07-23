@@ -16,6 +16,7 @@ from ortools.sat.python import cp_model
 from .models import (
     CalculatorRequest,
     CalculatorResponse,
+    DEFAULT_REQUIRED_NIGHT_FL_COUNT,
     FixedStaffRule,
     HourlyCoverage,
     OfficerStaffRule,
@@ -340,10 +341,8 @@ def role_edge_exception_penalty(person: PersonState, slot: int, shift_map: dict[
 
 
 def role_allows_sector_slot(person: PersonState, slot: int, shift_map: dict[str, ShiftRule]) -> bool:
-    # Vi edge slots are allowed as a costly exception, not forbidden outright.
-    # The penalty keeps regular legal assignments and office fallback preferred.
-    if role_edge_exception_penalty(person, slot, shift_map):
-        return True
+    # The CP-SAT model decides whether edge slots are forbidden or admitted
+    # within a bounded crisis budget. Candidate generation keeps both available.
     return True
 
 
@@ -1013,8 +1012,14 @@ def create_mandatory_people(
             "zato jih generator ni dodal ponovno."
         )
 
-    if request.settings.include_night_fl_requirement and request.settings.required_night_fl_count != 4:
-        warnings.append("Nočna FL zahteva je spremenjena iz privzete vrednosti 4.")
+    if (
+        request.settings.include_night_fl_requirement
+        and request.settings.required_night_fl_count != DEFAULT_REQUIRED_NIGHT_FL_COUNT
+    ):
+        warnings.append(
+            "Nočna FL zahteva je spremenjena iz privzete vrednosti "
+            f"{DEFAULT_REQUIRED_NIGHT_FL_COUNT}."
+        )
 
     return people, next_id, notes, warnings
 
@@ -1185,6 +1190,26 @@ def target_sector_counts_for_request(request: CalculatorRequest) -> list[int]:
     return request.requested_sector_counts
 
 
+def schedule_leader_exception_hours(
+    scheduled: ScheduledResult,
+    shift_map: dict[str, ShiftRule],
+) -> tuple[int, int]:
+    people_by_id = {person.id: person for person in scheduled.people}
+    edge_hours = 0
+    overlap_hours = 0
+    for slot, worker_ids in enumerate(scheduled.hourly_workers):
+        active_people = [people_by_id[worker_id] for worker_id in worker_ids if worker_id in people_by_id]
+        edge_hours += sum(
+            1
+            for person in active_people
+            if role_edge_exception_penalty(person, slot, shift_map) > 0
+        )
+        fmp_count = sum(1 for person in active_people if (person.role or "").upper() == "FMP")
+        vi_count = sum(1 for person in active_people if (person.role or "").upper() in {"V1", "V2", "V3"})
+        overlap_hours += fmp_count * vi_count
+    return edge_hours, overlap_hours
+
+
 def shift_demand_score(shift: ShiftRule, target_sector_counts: list[int]) -> int:
     return sum(target_sector_counts[slot] for slot in shift_slots(shift))
 
@@ -1291,6 +1316,7 @@ def response_from_schedule(
     baseline_min_people, baseline_min_people_formula = baseline_min_people_for_profile(
         target_sector_counts_for_request(request)
     )
+    leader_edge_exception_hours, fmp_vi_overlap_hours = schedule_leader_exception_hours(scheduled, shift_map)
 
     return CalculatorResponse(
         feasible=missing_sector_hours == 0,
@@ -1302,6 +1328,9 @@ def response_from_schedule(
         solver_solution_count=solver_snapshot.solution_count if solver_snapshot else 0,
         solver_optimality_gap_percent=solver_snapshot.optimality_gap_percent if solver_snapshot else None,
         solver_stop_reason=solver_snapshot.stop_reason if solver_snapshot else None,
+        leader_edge_exception_hours=leader_edge_exception_hours,
+        fmp_vi_overlap_hours=fmp_vi_overlap_hours,
+        crisis_exception_hours=leader_edge_exception_hours + fmp_vi_overlap_hours,
         missing_sector_hours=missing_sector_hours,
         baseline_min_people=baseline_min_people,
         baseline_min_people_formula=baseline_min_people_formula,
@@ -1900,10 +1929,12 @@ def solve_schedule_with_cp_sat(
     target_sector_counts: list[int],
     license_caps: dict[str, int] | None = None,
     selected_total_cap: int | None = None,
+    selected_total_min: int | None = None,
     shift_license_caps: dict[tuple[str, str], int] | None = None,
     shift_total_caps: dict[str, int] | None = None,
     source_license_caps: dict[tuple[str, str], int] | None = None,
     non_pool_selected_cap: int | None = None,
+    non_pool_selected_min: int | None = None,
     license_target_counts: dict[str, int] | None = None,
     minimum_covered_sector_hours: int | None = None,
     stop_after_coverage_target: bool = False,
@@ -1928,6 +1959,9 @@ def solve_schedule_with_cp_sat(
     if selected_total_cap is not None:
         model.Add(sum(selected.values()) <= selected_total_cap)
 
+    if selected_total_min is not None:
+        model.Add(sum(selected.values()) >= selected_total_min)
+
     if non_pool_selected_cap is not None:
         model.Add(
             sum(
@@ -1936,6 +1970,16 @@ def solve_schedule_with_cp_sat(
                 if person.source != OFFICE_POOL_SOURCE
             )
             <= non_pool_selected_cap
+        )
+
+    if non_pool_selected_min is not None:
+        model.Add(
+            sum(
+                selected[index]
+                for index, person in enumerate(candidates)
+                if person.source != OFFICE_POOL_SOURCE
+            )
+            >= non_pool_selected_min
         )
 
     if license_caps is not None:
@@ -1956,6 +2000,11 @@ def solve_schedule_with_cp_sat(
                     selected[index]
                     for index, person in enumerate(candidates)
                     if person.shift == shift_code and person.license == license_name
+                    and not (
+                        shift_code == "A21"
+                        and license_name == "FL"
+                        and (person.role or "").upper() == "V3"
+                    )
                 )
                 <= cap
             )
@@ -2012,6 +2061,7 @@ def solve_schedule_with_cp_sat(
     sector_names_by_slot: dict[int, list[str]] = {}
     profile_selection_by_slot: dict[int, list[tuple[tuple[str, ...], cp_model.IntVar]]] = {}
     assignment_penalty_terms: list[cp_model.LinearExpr] = []
+    leader_edge_exception_vars: list[cp_model.IntVar] = []
     profile_choice_penalty_terms: list[cp_model.LinearExpr] = []
     max_single_assignment_penalty = 0
     profile_choice_penalty_ceiling = 0
@@ -2069,9 +2119,10 @@ def solve_schedule_with_cp_sat(
                     assignments_by_person_slot[(index, slot)].append(assignment)
                     seat_assignments[(slot, sector_position, seat)].append((index, assignment))
                     model.Add(assignment <= selected[index])
+                    edge_exception_penalty = role_edge_exception_penalty(person, slot, shift_map)
                     assignment_penalty = (
                         role_penalty(person)
-                        + role_edge_exception_penalty(person, slot, shift_map)
+                        + edge_exception_penalty
                         + sector_license_preference(person, sector_name)
                         + (OFFICER_WORK_PENALTY if is_officer(person) else 0)
                         + officer_slot_edge_penalty(person, slot, shift_map)
@@ -2079,6 +2130,8 @@ def solve_schedule_with_cp_sat(
                     max_single_assignment_penalty = max(max_single_assignment_penalty, assignment_penalty)
                     if assignment_penalty:
                         assignment_penalty_terms.append(assignment_penalty * assignment)
+                    if edge_exception_penalty:
+                        leader_edge_exception_vars.append(assignment)
 
                 model.Add(sum(possible_seat_assignments) == cover)
 
@@ -2101,6 +2154,7 @@ def solve_schedule_with_cp_sat(
         )
 
     fmp_leader_overlap_penalty_terms: list[cp_model.LinearExpr] = []
+    fmp_leader_overlap_vars: list[cp_model.IntVar] = []
     fmp_leader_overlap_penalty_ceiling = 0
     for first_index, first_person in enumerate(candidates):
         for second_index in range(first_index + 1, len(candidates)):
@@ -2117,12 +2171,24 @@ def solve_schedule_with_cp_sat(
                 model.Add(overlap >= first_work + second_work - 1)
                 model.Add(overlap <= first_work)
                 model.Add(overlap <= second_work)
+                fmp_leader_overlap_vars.append(overlap)
                 fmp_leader_overlap_penalty_terms.append(FMP_LEADER_OVERLAP_PENALTY * overlap)
                 fmp_leader_overlap_penalty_ceiling += FMP_LEADER_OVERLAP_PENALTY
 
+    leader_exception_vars = [*leader_edge_exception_vars, *fmp_leader_overlap_vars]
+    if leader_exception_vars:
+        if request.leader_exception_mode == "allow":
+            model.Add(sum(leader_exception_vars) <= request.max_leader_exception_hours)
+        else:
+            model.Add(sum(leader_exception_vars) == 0)
+
     covered_sector_count = sum(covered_sectors.values())
-    if minimum_covered_sector_hours is not None:
-        model.Add(covered_sector_count >= min(requested_sector_hours, minimum_covered_sector_hours))
+    coverage_floor = max(
+        minimum_covered_sector_hours or 0,
+        request.continuation_min_sector_hours or 0,
+    )
+    if coverage_floor > 0:
+        model.Add(covered_sector_count >= min(requested_sector_hours, coverage_floor))
     selected_count = sum(selected.values())
     selected_capacity = sum(capacity_by_candidate[index] * selected[index] for index in range(len(candidates)))
     officer_candidate_count = sum(1 for person in candidates if is_officer(person))
@@ -2479,7 +2545,7 @@ def solve_schedule_with_cp_sat(
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = request.settings.cp_sat_time_limit_seconds
     solver.parameters.num_search_workers = CP_SAT_WORKERS
-    solver.parameters.random_seed = 1
+    solver.parameters.random_seed = request.solver_random_seed
     callback = BestSolutionCallback()
     cancel_monitor_stop = Event()
     cancel_monitor: Thread | None = None
@@ -3524,6 +3590,8 @@ def calculate(
         "Izključene izmene iz nastavitev pravil se ne dodajo med kandidate.",
     )
     max_workers = max_required_workers_per_hour(target_sector_counts)
+    available_shifts = enabled_shift_rules(request.settings.shifts)
+    candidate_shift_count = max(1, len(candidate_shift_codes(available_shifts, target_sector_counts)))
     for license_name, remaining_count in (
         ("FL", remaining_fl),
         ("APS", remaining_aps),
@@ -3533,8 +3601,11 @@ def calculate(
             people,
             next_id,
             license_name,
-            min(remaining_count, max(2, max_workers)),
-            enabled_shift_rules(request.settings.shifts),
+            min(
+                remaining_count,
+                max(2, max_workers, (remaining_count + candidate_shift_count - 1) // candidate_shift_count),
+            ),
+            available_shifts,
             target_sector_counts,
             shift_caps,
         )
@@ -3617,6 +3688,7 @@ def calculate(
                 "ACS": request.acs_count,
             },
             selected_total_cap=request.total_people,
+            selected_total_min=request.total_people,
             shift_license_caps=night_shift_license_caps(request),
             shift_total_caps=shift_caps,
             solution_callback=publish_incumbent,
@@ -3647,7 +3719,9 @@ def calculate(
                 "ACS": request.acs_count + office_pool_license_counts["ACS"],
             },
             selected_total_cap=request.total_people + sum(office_pool_license_counts.values()),
+            selected_total_min=request.total_people,
             non_pool_selected_cap=request.total_people,
+            non_pool_selected_min=request.total_people,
             shift_license_caps=night_shift_license_caps(request),
             shift_total_caps=shift_caps,
             source_license_caps=office_pool_source_license_caps(request),
@@ -3688,7 +3762,9 @@ def calculate(
         "Pripravljam rezultat in diagnostična sporočila.",
         None,
     )
-    notes.append("OR-Tools CP-SAT najprej maksimizira pokrite sektorje, nato minimizira število uporabljenih ljudi.")
+    notes.append(
+        "OR-Tools CP-SAT najprej maksimizira pokrite sektorje in pri tem ohrani točno vpisano število rednih ljudi."
+    )
     if sum(office_pool_license_counts.values()) > 0:
         if office_pool_fallback_used:
             notes.append(
@@ -3701,7 +3777,7 @@ def calculate(
             notes.append("Operativni office pool je bil preizkušen kot fallback, vendar ni izboljšal pokritosti.")
         else:
             notes.append("Operativni office pool ni bil uporabljen, ker redne možnosti že pokrijejo zahtevano odprtost.")
-    notes.append("Pri enaki pokritosti in številu ljudi CP-SAT izbere zasedbo z manj neizkoriščene kapacitete izmen.")
+    notes.append("Pri enaki pokritosti CP-SAT izbere zasedbo z manj neizkoriščene kapacitete izmen.")
     notes.append(f"Status CP-SAT rešitve: {solver_snapshot.status}.")
     if solver_snapshot.stop_reason:
         notes.append(f"Politika izračuna je samodejno ustavila CP-SAT: {solver_snapshot.stop_reason}.")
@@ -3729,10 +3805,18 @@ def calculate(
     notes.append("Kalkulator odpira največ toliko sektorjev, kot jih uporabnik označi v urnem vnosu želene odprtosti.")
     notes.append("ALL sektor zahteva 2× FL; LOWER sprejme APS/FL; UPPER, MID, HIGH in TOP sprejmejo ACS/FL.")
     notes.append("Razpored se po CP-SAT rešitvi lokalno zgladi: če ne zmanjša pokritosti, ohrani isti sektor in zamenja levo/desno pozicijo po eni uri.")
-    notes.append(
-        "FMP je dovoljen kot sektorski kontrolor, vendar ima pri izbiri delavcev slabšo prioriteto; "
-        "FMP in Vi1/Vi2/Vi3 ne smeta biti hkrati na sektorju v isti uri."
-    )
+    leader_edge_hours, leader_overlap_hours = schedule_leader_exception_hours(scheduled, shift_map)
+    if request.leader_exception_mode == "allow":
+        notes.append(
+            "Krizni VI/FMP način je dovolil največ "
+            f"{request.max_leader_exception_hours} izjemnih ur; uporabljeno je bilo "
+            f"{leader_edge_hours + leader_overlap_hours} "
+            f"(VI robne ure {leader_edge_hours}, VI/FMP prekrivanje {leader_overlap_hours})."
+        )
+    else:
+        notes.append(
+            "Redna faza strogo prepoveduje VI na robnih urah in hkratno delo FMP ter VI na sektorju."
+        )
     active_officers = [person for person in scheduled.people if is_officer(person) and person.sector_hours > 0]
     if active_officers:
         notes.append(f"Uporabljenih je {len(active_officers)} officerjev iz pisarne.")

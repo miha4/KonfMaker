@@ -5,10 +5,12 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from threading import Lock
+from time import monotonic
 from uuid import uuid4
 
 from .calculator import CALC_PHASE_PROGRESS_PREFIX, CalculationCancelled, SolverSnapshot, calculate, calculate_pareto
 from .config_library import complete_configuration, manual_configuration_one_down
+from .future_calculator import FutureCalculatorRequest, FutureCalculatorResponse, calculate_future_sector_hours
 from .models import CalculatorRequest, CalculatorResponse, CalculatorSettings, CompleteConfigurationRequest, ParetoPoint, ParetoResponse
 from .pattern_core import PATTERN_PROGRESS_PREFIX
 
@@ -47,7 +49,7 @@ class CalculationJob:
     created_at: datetime
     started_at: datetime | None = None
     finished_at: datetime | None = None
-    result: CalculatorResponse | ParetoResponse | None = None
+    result: CalculatorResponse | ParetoResponse | FutureCalculatorResponse | None = None
     result_version: int = 0
     best_result_updated_at: datetime | None = None
     solver_status: str | None = None
@@ -110,6 +112,25 @@ def _best_pareto_point(result: ParetoResponse) -> ParetoPoint | None:
     )
 
 
+def _calculator_result_rank(result: CalculatorResponse) -> tuple[int, int, int, int, int]:
+    used_officers = sum(
+        1
+        for person in result.people
+        if person.source in {"officer", "office-pool"} and person.sector_hours > 0
+    )
+    return (
+        result.max_sector_hours,
+        -result.crisis_exception_hours,
+        -used_officers,
+        -result.planned_people,
+        result.utilization_percent,
+    )
+
+
+def _future_result_rank(result: FutureCalculatorResponse) -> tuple[int, int]:
+    return result.covered_quarter_slots, -result.active_people
+
+
 def _warm_start_payload_from_result(result: CalculatorResponse) -> dict[str, object]:
     return {
         "people": [person.model_dump(mode="json") for person in result.people],
@@ -117,7 +138,10 @@ def _warm_start_payload_from_result(result: CalculatorResponse) -> dict[str, obj
     }
 
 
-def _refresh_warm_start_snapshot_locked(job: CalculationJob, result: CalculatorResponse | ParetoResponse | None) -> None:
+def _refresh_warm_start_snapshot_locked(
+    job: CalculationJob,
+    result: CalculatorResponse | ParetoResponse | FutureCalculatorResponse | None,
+) -> None:
     if not isinstance(result, CalculatorResponse):
         return
     if not result.people or not result.hourly_coverage:
@@ -181,6 +205,12 @@ def _status_payload(job: CalculationJob) -> dict[str, object]:
         best_missing_sector_hours = best_point.missing_sector_hours if best_point is not None else None
         best_planned_people = best_point.people_limit if best_point is not None else None
         best_utilization_percent = best_point.utilization_percent if best_point is not None else None
+    elif isinstance(best_result, FutureCalculatorResponse):
+        best_max_sector_hours = best_result.covered_sector_hours
+        best_requested_sector_hours = best_result.requested_sector_hours
+        best_missing_sector_hours = best_result.missing_sector_hours
+        best_planned_people = best_result.planned_people
+        best_utilization_percent = None
     else:
         best_max_sector_hours = None
         best_requested_sector_hours = None
@@ -196,6 +226,7 @@ def _status_payload(job: CalculationJob) -> dict[str, object]:
         "message": job.message,
         "elapsed_seconds": _elapsed_seconds(job),
         "error": job.error,
+        "cancel_requested": job.cancel_requested,
         "best_result_available": best_result is not None,
         "best_result_version": job.result_version,
         "best_max_sector_hours": best_max_sector_hours,
@@ -273,7 +304,10 @@ def _store_solver_snapshot_locked(job: CalculationJob, solver_snapshot: SolverSn
     job.solver_sector_gap_to_best_bound = solver_snapshot.sector_gap_to_best_bound
 
 
-def _store_result_solver_fields_locked(job: CalculationJob, result: CalculatorResponse | ParetoResponse) -> None:
+def _store_result_solver_fields_locked(
+    job: CalculationJob,
+    result: CalculatorResponse | ParetoResponse | FutureCalculatorResponse,
+) -> None:
     if isinstance(result, CalculatorResponse):
         job.solver_status = result.solver_status
         job.solver_solution_count = max(job.solver_solution_count, result.solver_solution_count)
@@ -285,6 +319,13 @@ def _store_result_solver_fields_locked(job: CalculationJob, result: CalculatorRe
         job.solver_sector_gap_to_best_bound = result.solver_gap_to_upper_bound
         return
 
+    if isinstance(result, FutureCalculatorResponse):
+        job.solver_status = result.solver_status
+        job.solver_stop_reason = result.solver_stop_reason
+        job.solver_best_bound_sector_hours = result.solver_upper_bound_quarter_slots
+        job.solver_sector_gap_to_best_bound = result.solver_gap_quarter_slots
+        return
+
     best_point = _best_pareto_point(result)
     if best_point is None:
         return
@@ -294,7 +335,7 @@ def _store_result_solver_fields_locked(job: CalculationJob, result: CalculatorRe
     job.solver_stop_reason = best_point.solver_stop_reason
 
 
-def _result_summary(result: CalculatorResponse | ParetoResponse, prefix: str) -> str:
+def _result_summary(result: CalculatorResponse | ParetoResponse | FutureCalculatorResponse, prefix: str) -> str:
     if isinstance(result, ParetoResponse):
         best_point = _best_pareto_point(result)
         if best_point is None:
@@ -303,6 +344,11 @@ def _result_summary(result: CalculatorResponse | ParetoResponse, prefix: str) ->
             f"{prefix}: najboljše {best_point.max_sector_hours}/{result.requested_sector_hours} sektorskih ur "
             f"({best_point.coverage_percent}%) pri limitu {best_point.people_limit} ljudi."
         )
+    if isinstance(result, FutureCalculatorResponse):
+        return (
+            f"{prefix}: {result.covered_sector_hours:g}/{result.requested_sector_hours:g} sektorskih ur, "
+            f"manjka {result.missing_sector_hours:g}; {result.active_people} aktivnih ljudi."
+        )
     return (
         f"{prefix}: {result.max_sector_hours}/{result.requested_sector_hours} sektorskih ur, "
         f"manjka {result.missing_sector_hours}; {result.planned_people} ljudi, "
@@ -310,7 +356,23 @@ def _result_summary(result: CalculatorResponse | ParetoResponse, prefix: str) ->
     )
 
 
-def _finish_with_result_locked(job: CalculationJob, result: CalculatorResponse | ParetoResponse, message: str) -> None:
+def _finish_with_result_locked(
+    job: CalculationJob,
+    result: CalculatorResponse | ParetoResponse | FutureCalculatorResponse,
+    message: str,
+) -> None:
+    if (
+        isinstance(result, CalculatorResponse)
+        and isinstance(job.result, CalculatorResponse)
+        and _calculator_result_rank(job.result) > _calculator_result_rank(result)
+    ):
+        result = job.result
+    elif (
+        isinstance(result, FutureCalculatorResponse)
+        and isinstance(job.result, FutureCalculatorResponse)
+        and _future_result_rank(job.result) > _future_result_rank(result)
+    ):
+        result = job.result
     job.status = "finished"
     job.progress = 100
     job.result = result
@@ -516,14 +578,33 @@ def _update_incumbent(job_id: str, result: CalculatorResponse, solver_snapshot: 
         job = _jobs.get(job_id)
         if job is None or job.status in {"finished", "failed"}:
             return
+        _store_solver_snapshot_locked(job, solver_snapshot)
+        if isinstance(job.result, CalculatorResponse) and _calculator_result_rank(job.result) >= _calculator_result_rank(result):
+            return
         job.result = result
         job.result_version += 1
         job.best_result_updated_at = _now()
-        _store_solver_snapshot_locked(job, solver_snapshot)
         _refresh_warm_start_snapshot_locked(job, result)
         job.status = "running"
         job.progress = max(job.progress, 90 if result.missing_sector_hours == 0 else 80)
         job.message = _result_summary(result, "Najboljša najdena rešitev")
+
+
+def _update_future_incumbent(job_id: str, result: FutureCalculatorResponse) -> None:
+    with _lock:
+        job = _jobs.get(job_id)
+        if job is None or job.status in {"finished", "failed"} or job.cancel_requested:
+            return
+        if isinstance(job.result, FutureCalculatorResponse) and _future_result_rank(job.result) >= _future_result_rank(result):
+            return
+        job.result = result
+        job.result_version += 1
+        job.best_result_updated_at = _now()
+        job.status = "running"
+        job.progress = max(job.progress, 25)
+        job.solver_solution_count += 1
+        _store_result_solver_fields_locked(job, result)
+        job.message = _result_summary(result, "Najboljša sprotna rešitev")
 
 
 def _is_cancel_requested(job_id: str) -> bool:
@@ -545,11 +626,16 @@ def _run_calculation_job(job_id: str, request: CalculatorRequest) -> None:
         job.message = "Začenjam izračun."
         job.started_at = _now()
 
+    calculation_deadline = monotonic() + request.settings.cp_sat_time_limit_seconds
+
+    def calculation_should_stop() -> bool:
+        return _is_cancel_requested(job_id) or monotonic() >= calculation_deadline
+
     try:
         result = calculate(
             request,
             progress_callback=lambda progress, message: _update_progress(job_id, progress, message),
-            cancel_callback=lambda: _is_cancel_requested(job_id),
+            cancel_callback=calculation_should_stop,
             incumbent_callback=lambda result, snapshot: _update_incumbent(job_id, result, snapshot),
         )
         with _lock:
@@ -569,9 +655,20 @@ def _run_calculation_job(job_id: str, request: CalculatorRequest) -> None:
                 message = "Izračun je končan."
             _finish_with_result_locked(job, result, message)
     except CalculationCancelled as exc:
+        stopped_on_global_time_limit = monotonic() >= calculation_deadline
         with _lock:
             job = _jobs.get(job_id)
             if job is not None:
+                if stopped_on_global_time_limit and not job.cancel_requested:
+                    job.solver_stop_reason = (
+                        "skupni časovni limit izračuna "
+                        f"({request.settings.cp_sat_time_limit_seconds} s) se je iztekel"
+                    )
+                    _finish_with_best_result_locked(
+                        job,
+                        "Skupni časovni limit se je iztekel; uporabljena je najboljša najdena rešitev",
+                    )
+                    return
                 _finish_with_best_result_locked(
                     job,
                     "Optimizacija je bila prekinjena; uporabljena je najboljša najdena rešitev",
@@ -581,6 +678,43 @@ def _run_calculation_job(job_id: str, request: CalculatorRequest) -> None:
             job = _jobs.get(job_id)
             if job is not None:
                 _mark_failed_locked(job, "Izračun se je ustavil zaradi napake.", str(exc))
+
+
+def _run_future_calculation_job(job_id: str, request: FutureCalculatorRequest) -> None:
+    with _lock:
+        job = _jobs.get(job_id)
+        if job is None:
+            return
+        if job.cancel_requested:
+            _mark_failed_locked(job, "15-minutni izračun je bil preklican.", "Izračun je bil preklican.")
+            return
+        job.status = "running"
+        job.progress = 10
+        job.message = "CP-SAT računa 96 četrturnih terminov."
+        job.started_at = _now()
+
+    try:
+        result = calculate_future_sector_hours(
+            request,
+            cancel_callback=lambda: _is_cancel_requested(job_id),
+            incumbent_callback=lambda result: _update_future_incumbent(job_id, result),
+        )
+        with _lock:
+            job = _jobs.get(job_id)
+            if job is None:
+                return
+            if job.cancel_requested and result.solver_status not in {"FEASIBLE", "OPTIMAL"}:
+                prefix = "15-minutni izračun je bil prekinjen pred prvo najdeno rešitvijo"
+            elif job.cancel_requested:
+                prefix = "15-minutni izračun je bil prekinjen; uporabljena je najboljša najdena rešitev"
+            else:
+                prefix = "15-minutni izračun je končan"
+            _finish_with_result_locked(job, result, _result_summary(result, prefix))
+    except Exception as exc:  # noqa: BLE001 - the job API must expose calculation failures.
+        with _lock:
+            job = _jobs.get(job_id)
+            if job is not None:
+                _mark_failed_locked(job, "15-minutni izračun se je ustavil zaradi napake.", str(exc))
 
 
 def _run_pareto_job(job_id: str, request: CalculatorRequest) -> None:
@@ -767,6 +901,30 @@ def create_calculation_job(request: CalculatorRequest) -> dict[str, str]:
     return {"job_id": job_id, "status": "queued"}
 
 
+def create_future_calculation_job(request: FutureCalculatorRequest) -> dict[str, str]:
+    job_id = uuid4().hex
+    job = CalculationJob(
+        job_id=job_id,
+        kind="future_calculation",
+        status="queued",
+        progress=0,
+        message="Čaka v vrsti za 15-minutni izračun.",
+        created_at=_now(),
+    )
+
+    with _lock:
+        _cleanup_old_jobs_locked()
+        _jobs[job_id] = job
+
+    future = _executor.submit(_run_future_calculation_job, job_id, request)
+    with _lock:
+        current_job = _jobs.get(job_id)
+        if current_job is not None:
+            current_job.future = future
+
+    return {"job_id": job_id, "status": "queued"}
+
+
 def create_complete_configuration_job(request: CompleteConfigurationRequest) -> dict[str, str]:
     job_id = uuid4().hex
     job = CalculationJob(
@@ -861,7 +1019,9 @@ def get_job_status(job_id: str) -> dict[str, object]:
         return _status_payload(job)
 
 
-def get_job_result(job_id: str) -> CalculatorResponse | ParetoResponse | dict[str, object]:
+def get_job_result(
+    job_id: str,
+) -> CalculatorResponse | ParetoResponse | FutureCalculatorResponse | dict[str, object]:
     with _lock:
         job = _jobs.get(job_id)
         if job is None:

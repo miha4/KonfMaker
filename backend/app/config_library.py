@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
+from threading import Lock
 from typing import Callable
 from uuid import uuid4
 from xml.etree import ElementTree as ET
@@ -23,6 +24,8 @@ from .models import (
     CalculatorSettings,
     CompareConfigurationRequest,
     CompleteConfigurationRequest,
+    DEFAULT_INCLUDE_NIGHT_FL_REQUIREMENT,
+    DEFAULT_REQUIRED_NIGHT_FL_COUNT,
     FixedStaffRule,
     OfficerStaffRule,
     SaveUserConfigurationRequest,
@@ -88,7 +91,9 @@ DEFAULT_CONFIG_LIBRARY_PATHS = [
 DEFAULT_CONFIG_WORKBOOK_PATHS = [
     PROJECT_ROOT / "Konfiguracije OKZP.xlsx",
 ]
-DEFAULT_USER_CONFIG_LIBRARY_PATH = PROJECT_ROOT / "data" / "user_configurations.json"
+DEFAULT_USER_CONFIG_LIBRARY_PATH = PROJECT_ROOT / "data" / "user_configurations.local.json"
+LEGACY_USER_CONFIG_LIBRARY_PATH = PROJECT_ROOT / "data" / "user_configurations.json"
+_USER_CONFIGURATION_LOCK = Lock()
 DAY_START = 7
 XLSX_NS = {
     "main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
@@ -191,8 +196,15 @@ def user_configuration_library_path() -> Path:
     return Path(configured) if configured else DEFAULT_USER_CONFIG_LIBRARY_PATH
 
 
-def _read_user_configuration_records() -> list[dict[str, object]]:
+def user_configuration_read_path() -> Path:
     path = user_configuration_library_path()
+    if path.exists() or os.environ.get(USER_CONFIG_LIBRARY_ENV):
+        return path
+    return LEGACY_USER_CONFIG_LIBRARY_PATH if LEGACY_USER_CONFIG_LIBRARY_PATH.exists() else path
+
+
+def _read_user_configuration_records() -> list[dict[str, object]]:
+    path = user_configuration_read_path()
     try:
         with path.open(encoding="utf-8") as handle:
             data = json.load(handle)
@@ -207,17 +219,24 @@ def _read_user_configuration_records() -> list[dict[str, object]]:
 def _write_user_configuration_records(records: list[dict[str, object]]) -> None:
     path = user_configuration_library_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        json.dump(
-            {
-                "version": 1,
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-                "configurations": records,
-            },
-            handle,
-            ensure_ascii=False,
-            indent=2,
-        )
+    temporary_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        with temporary_path.open("w", encoding="utf-8") as handle:
+            json.dump(
+                {
+                    "version": 2,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                    "configurations": records,
+                },
+                handle,
+                ensure_ascii=False,
+                indent=2,
+            )
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def _user_configuration_id() -> str:
@@ -344,8 +363,8 @@ def settings_for_configuration_evaluation(
         cp_sat_acceptable_sector_gap=0,
         cp_sat_min_auto_stop_coverage_percent=95,
         include_required_shift_leaders=True,
-        include_night_fl_requirement=False,
-        required_night_fl_count=0,
+        include_night_fl_requirement=DEFAULT_INCLUDE_NIGHT_FL_REQUIREMENT,
+        required_night_fl_count=DEFAULT_REQUIRED_NIGHT_FL_COUNT,
         v1_sector_limit=1,
         v2_sector_limit=1,
         v3_sector_limit=4,
@@ -627,19 +646,33 @@ def _manual_schedule_from_result(result: CalculatorResponse, source_path: Path) 
 
 
 def _user_configuration_summary(record: dict[str, object]) -> dict[str, object]:
-    result = CalculatorResponse.model_validate(record["result"])
-    license_counts = _license_counts_from_result(result)
+    stored_summary = record.get("summary")
+    if isinstance(stored_summary, dict):
+        planned_people = int(stored_summary.get("planned_people", 0) or 0)
+        max_sector_hours = int(stored_summary.get("max_sector_hours", 0) or 0)
+        stored_license_counts = stored_summary.get("license_counts")
+        license_counts = {
+            license_name: int(stored_license_counts.get(license_name, 0) or 0)
+            if isinstance(stored_license_counts, dict)
+            else 0
+            for license_name in LICENSES
+        }
+    else:
+        result = CalculatorResponse.model_validate(record["result"])
+        planned_people = result.planned_people
+        max_sector_hours = result.max_sector_hours
+        license_counts = _license_counts_from_result(result)
     return {
         "id": str(record["id"]),
         "name": str(record["name"]),
         "column_index": -1,
-        "parsed_total": result.planned_people,
-        "total_without_waiting": result.planned_people,
+        "parsed_total": planned_people,
+        "total_without_waiting": planned_people,
         "waiting_count": 0,
         "license_counts": license_counts,
         "unsupported_rows": [],
         "status": "UPORABNIK",
-        "model_max_sector_hours": result.max_sector_hours,
+        "model_max_sector_hours": max_sector_hours,
         "model_seconds": None,
         "has_manual_schedule": True,
         "source_type": "user",
@@ -650,17 +683,28 @@ def _user_configuration_summary(record: dict[str, object]) -> dict[str, object]:
 
 
 def _user_configuration_detail(record: dict[str, object]) -> dict[str, object]:
-    result = CalculatorResponse.model_validate(record["result"])
     path = user_configuration_library_path()
     summary = _user_configuration_summary(record)
+    stored_schedule = record.get("manual_schedule")
+    if isinstance(stored_schedule, dict):
+        manual_schedule = {**stored_schedule, "source_path": str(path)}
+        fixed_staff = record.get("fixed_staff") if isinstance(record.get("fixed_staff"), list) else []
+        officer_staff = record.get("officer_staff") if isinstance(record.get("officer_staff"), list) else []
+        staff_rows = record.get("staff_rows") if isinstance(record.get("staff_rows"), list) else []
+    else:
+        result = CalculatorResponse.model_validate(record["result"])
+        manual_schedule = _manual_schedule_from_result(result, path)
+        fixed_staff = _fixed_staff_from_result(result)
+        officer_staff = _officer_staff_from_result(result)
+        staff_rows = _staff_rows_from_result(result)
     return {
         **summary,
         "source_path": str(path),
         "workbook_path": None,
-        "fixed_staff": _fixed_staff_from_result(result),
-        "officer_staff": _officer_staff_from_result(result),
-        "staff_rows": _staff_rows_from_result(result),
-        "manual_schedule": _manual_schedule_from_result(result, path),
+        "fixed_staff": fixed_staff,
+        "officer_staff": officer_staff,
+        "staff_rows": staff_rows,
+        "manual_schedule": manual_schedule,
     }
 
 
@@ -678,31 +722,44 @@ def save_user_configuration(payload: SaveUserConfigurationRequest) -> dict[str, 
     name = (payload.name or "").strip()
     if not name:
         name = f"Shranjena {datetime.now().strftime('%d.%m. %H:%M')}"
-    records = _read_user_configuration_records()
+    manual_schedule = _manual_schedule_from_result(result, user_configuration_library_path())
+    manual_schedule.pop("source_path", None)
     record = {
+        "schema_version": 2,
         "id": _user_configuration_id(),
         "name": name,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "note": (payload.note or "").strip() or None,
-        "result": result.model_dump(),
+        "summary": {
+            "planned_people": result.planned_people,
+            "max_sector_hours": result.max_sector_hours,
+            "license_counts": _license_counts_from_result(result),
+        },
+        "fixed_staff": _fixed_staff_from_result(result),
+        "officer_staff": _officer_staff_from_result(result),
+        "staff_rows": _staff_rows_from_result(result),
+        "manual_schedule": manual_schedule,
     }
-    records.insert(0, record)
-    _write_user_configuration_records(records)
+    with _USER_CONFIGURATION_LOCK:
+        records = _read_user_configuration_records()
+        records.insert(0, record)
+        _write_user_configuration_records(records)
     return _user_configuration_detail(record)
 
 
 def delete_user_configuration(configuration_id: str) -> dict[str, object]:
     if not str(configuration_id).startswith("user:"):
         raise ValueError("Izbrišeš lahko samo konfiguracije, shranjene s strani uporabnika.")
-    records = _read_user_configuration_records()
-    next_records = [
-        record
-        for record in records
-        if str(record.get("id")) != configuration_id
-    ]
-    if len(next_records) == len(records):
-        raise ValueError("Uporabniška konfiguracija ne obstaja.")
-    _write_user_configuration_records(next_records)
+    with _USER_CONFIGURATION_LOCK:
+        records = _read_user_configuration_records()
+        next_records = [
+            record
+            for record in records
+            if str(record.get("id")) != configuration_id
+        ]
+        if len(next_records) == len(records):
+            raise ValueError("Uporabniška konfiguracija ne obstaja.")
+        _write_user_configuration_records(next_records)
     return {
         "deleted": True,
         "id": configuration_id,
@@ -770,9 +827,13 @@ def _xlsx_sheet_targets(workbook: zipfile.ZipFile) -> dict[str, str]:
 
 
 @lru_cache(maxsize=8)
-def _xlsx_sheet_names(path: str) -> frozenset[str]:
+def _xlsx_sheet_names_cached(path: str, modified_at_ns: int) -> frozenset[str]:
     with zipfile.ZipFile(path) as workbook:
         return frozenset(_xlsx_sheet_targets(workbook))
+
+
+def _xlsx_sheet_names(path: str) -> frozenset[str]:
+    return _xlsx_sheet_names_cached(path, Path(path).stat().st_mtime_ns)
 
 
 def _xlsx_cell_value(cell: ET.Element, shared_strings: list[str]) -> str | int | float | bool | None:
@@ -835,11 +896,9 @@ def _xlsx_sheet_cells(
     return values
 
 
-def manual_schedule_for_configuration(name: str) -> dict[str, object] | None:
-    path = selected_configuration_workbook_path()
-    if path is None:
-        return None
-
+@lru_cache(maxsize=512)
+def _manual_schedule_for_workbook(path_text: str, modified_at_ns: int, name: str) -> dict[str, object] | None:
+    path = Path(path_text)
     schedule_columns = {
         "AR", "AS", "AT", "AU", "AV",
         *(column for _, *pair in MANUAL_SCHEDULE_COLUMNS for column in pair),
@@ -914,6 +973,13 @@ def manual_schedule_for_configuration(name: str) -> dict[str, object] | None:
     }
 
 
+def manual_schedule_for_configuration(name: str) -> dict[str, object] | None:
+    path = selected_configuration_workbook_path()
+    if path is None:
+        return None
+    return _manual_schedule_for_workbook(str(path), path.stat().st_mtime_ns, name)
+
+
 def _manual_schedule_max_sector_hours(manual_schedule: dict[str, object] | None) -> int | None:
     if manual_schedule is None:
         return None
@@ -973,29 +1039,28 @@ def configuration_summary(
     }
 
 
-def manual_configuration_library() -> dict[str, object]:
-    path = selected_configuration_library_path()
-    if path is None:
-        user_configurations = [_user_configuration_summary(record) for record in _read_user_configuration_records()]
-        return {
-            "source_path": None,
-            "workbook_path": None,
-            "user_source_path": str(user_configuration_library_path()),
-            "configurations": user_configurations,
-        }
-
+@lru_cache(maxsize=8)
+def _base_manual_configuration_summaries(
+    path_text: str,
+    path_modified_at_ns: int,
+    workbook_path_text: str | None,
+    workbook_modified_at_ns: int | None,
+) -> tuple[dict[str, object], ...]:
+    path = Path(path_text)
     rows = read_configuration_csv(path)
-    workbook_path = selected_configuration_workbook_path()
-    manual_sheet_names = _xlsx_sheet_names(str(workbook_path)) if workbook_path else frozenset()
+    workbook_path = Path(workbook_path_text) if workbook_path_text else None
+    manual_sheet_names = _xlsx_sheet_names(str(workbook_path)) if workbook_path is not None else frozenset()
     model_max_by_column = configuration_metric_by_column(rows, "MODEL_MAX_SH")
     status_by_column = configuration_metric_by_column(rows, "MODEL_STATUS")
     seconds_by_column = configuration_metric_by_column(rows, "MODEL_SECONDS")
     supported_shifts = {shift.code for shift in DEFAULT_SHIFTS}
     configuration_columns_list = list(configuration_columns(rows))
     manual_sector_hours_by_name = {
-        name: _manual_schedule_max_sector_hours(manual_schedule_for_configuration(name))
+        name: _manual_schedule_max_sector_hours(
+            _manual_schedule_for_workbook(str(workbook_path), int(workbook_modified_at_ns or 0), name)
+        )
         for _, name in configuration_columns_list
-        if name in manual_sheet_names
+        if workbook_path is not None and name in manual_sheet_names
     }
     configurations = [
         configuration_summary(
@@ -1013,7 +1078,27 @@ def manual_configuration_library() -> dict[str, object]:
         for item in configurations
         if int(item["parsed_total"]) > 0 or item["model_max_sector_hours"] is not None
     ]
+    return tuple(configurations)
+
+
+def manual_configuration_library() -> dict[str, object]:
+    path = selected_configuration_library_path()
+    workbook_path = selected_configuration_workbook_path()
     user_configurations = [_user_configuration_summary(record) for record in _read_user_configuration_records()]
+    if path is None:
+        return {
+            "source_path": None,
+            "workbook_path": None,
+            "user_source_path": str(user_configuration_library_path()),
+            "configurations": user_configurations,
+        }
+
+    configurations = _base_manual_configuration_summaries(
+        str(path),
+        path.stat().st_mtime_ns,
+        str(workbook_path) if workbook_path else None,
+        workbook_path.stat().st_mtime_ns if workbook_path else None,
+    )
     return {
         "source_path": str(path),
         "workbook_path": str(workbook_path) if workbook_path else None,
