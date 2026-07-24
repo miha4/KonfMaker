@@ -1304,6 +1304,84 @@ def test_fmp_and_vi_overlap_is_only_available_in_limited_crisis_mode():
     assert overlap_hours == 1
 
 
+def test_final_license_preference_chooses_acs_over_equivalent_aps():
+    requested = [1] + [0] * 23
+    request = make_request(
+        total=4,
+        fl=2,
+        aps=1,
+        acs=1,
+        fmp=False,
+        requested_sector_counts=requested,
+        include_required_shift_leaders=False,
+        include_night_fl_requirement=False,
+        prefer_minimal_fl=True,
+    )
+    shift_map = shift_map_for_request(request)
+    candidates = [
+        PersonState(id="FL1", license="FL", shift="A7"),
+        PersonState(id="FL2", license="FL", shift="A7"),
+        PersonState(id="APS", license="APS", shift="A7"),
+        PersonState(id="ACS", license="ACS", shift="A7"),
+    ]
+
+    solved = solve_schedule_with_cp_sat(
+        candidates,
+        {0, 1},
+        request,
+        shift_map,
+        requested,
+        selected_total_cap=3,
+        selected_total_min=3,
+    )
+
+    assert solved is not None
+    scheduled, _snapshot = solved
+    selected_licenses = [person.license for person in scheduled.people]
+    assert scheduled.total_hours == 1
+    assert selected_licenses.count("ACS") == 1
+    assert selected_licenses.count("APS") == 0
+
+
+def test_acs_preference_does_not_override_higher_capacity_tie_breaker():
+    requested = [1] + [0] * 23
+    request = make_request(
+        total=4,
+        fl=2,
+        aps=1,
+        acs=1,
+        fmp=False,
+        requested_sector_counts=requested,
+        include_required_shift_leaders=False,
+        include_night_fl_requirement=False,
+        prefer_minimal_fl=True,
+    )
+    shift_map = shift_map_for_request(request)
+    candidates = [
+        PersonState(id="FL1", license="FL", shift="A7"),
+        PersonState(id="FL2", license="FL", shift="A7"),
+        PersonState(id="APS", license="APS", shift="A7"),
+        PersonState(id="ACS", license="ACS", shift="A8"),
+    ]
+
+    solved = solve_schedule_with_cp_sat(
+        candidates,
+        {0, 1},
+        request,
+        shift_map,
+        requested,
+        selected_total_cap=3,
+        selected_total_min=3,
+    )
+
+    assert solved is not None
+    scheduled, _snapshot = solved
+    selected_licenses = [person.license for person in scheduled.people]
+    assert scheduled.total_hours == 1
+    assert selected_licenses.count("APS") == 1
+    assert selected_licenses.count("ACS") == 0
+
+
 def test_manual_schedule_role_limits_do_not_lower_defaults():
     settings = settings_for_manual_schedule_evaluation(
         {

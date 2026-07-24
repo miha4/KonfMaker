@@ -19,6 +19,11 @@ import type {
   SaveUserConfigurationRequest,
 } from '../types/calculator';
 import type { FutureCalculatorRequest, FutureCalculatorResponse } from '../types/futureCalculator';
+import type {
+  AirportCalculatorRequest,
+  AirportCalculatorResponse,
+  AirportDefinition,
+} from '../types/airportCalculator';
 
 function resolveApiBaseUrl(): string {
   const configuredUrl = import.meta.env.VITE_API_BASE_URL?.trim();
@@ -85,6 +90,17 @@ export function calculateSectorHours(payload: CalculatorRequest): Promise<Calcul
 
 export function calculateFutureSectorHours(payload: FutureCalculatorRequest): Promise<FutureCalculatorResponse> {
   return requestJson<FutureCalculatorResponse>('/api/future-calculator', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getAirportDefinitions(): Promise<AirportDefinition[]> {
+  return requestJson<AirportDefinition[]>('/api/airport-calculator/shifts');
+}
+
+export function calculateAirportSchedule(payload: AirportCalculatorRequest): Promise<AirportCalculatorResponse> {
+  return requestJson<AirportCalculatorResponse>('/api/airport-calculator', {
     method: 'POST',
     body: JSON.stringify(payload),
   });

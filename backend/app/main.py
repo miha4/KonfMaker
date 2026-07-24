@@ -5,6 +5,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .analysis import WorkbookPayload, export_model_analysis, run_model_analysis, workbook_profile
+from .airport_calculator import (
+    AirportCalculatorRequest,
+    airport_definitions,
+    calculate_airport_schedule,
+)
 from .calibration import run_focus_soft_calibration
 from .calculator import DEFAULT_OFFICER_SHIFTS, DEFAULT_SHIFTS, calculate
 from .config_library import (
@@ -100,6 +105,16 @@ def calculate_sector_hours(request: CalculatorRequest):
 @app.post("/api/future-calculator")
 def future_calculator(request: FutureCalculatorRequest):
     return calculate_future_sector_hours(request)
+
+
+@app.get("/api/airport-calculator/shifts")
+def airport_calculator_shifts():
+    return airport_definitions()
+
+
+@app.post("/api/airport-calculator")
+def airport_calculator(request: AirportCalculatorRequest):
+    return calculate_airport_schedule(request)
 
 
 @app.post("/api/complete-configuration")

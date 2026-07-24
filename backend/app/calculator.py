@@ -74,7 +74,6 @@ SELECTED_PERSON_PENALTY = 10_000
 SELECTED_CAPACITY_PENALTY = 20
 LICENSE_MIX_DEVIATION_PENALTY = 20
 SECTOR_PROFILE_CHOICE_PENALTY = 3_000
-FL_SELECTED_PENALTY = 750
 OFFICER_SOURCE = "officer"
 OFFICE_POOL_SOURCE = "office-pool"
 REGULAR_SOURCE = "regular"
@@ -2197,10 +2196,10 @@ def solve_schedule_with_cp_sat(
         for index, person in enumerate(candidates)
         if is_officer(person)
     )
-    fl_selected_count = sum(
+    non_acs_selected_count = sum(
         selected[index]
         for index, person in enumerate(candidates)
-        if person.license == "FL"
+        if person.license != "ACS"
     )
     license_mix_penalty_terms: list[cp_model.LinearExpr] = []
     if license_target_counts:
@@ -2232,8 +2231,7 @@ def solve_schedule_with_cp_sat(
         if fmp_leader_overlap_penalty_terms
         else 0
     )
-    fl_preference_penalty = fl_selected_count * FL_SELECTED_PENALTY if request.prefer_minimal_fl else 0
-    lower_order_penalty_ceiling = (
+    base_lower_order_penalty_ceiling = (
         officer_candidate_count * OFFICER_SELECTED_PENALTY
         + len(candidates) * SELECTED_PERSON_PENALTY
         + sum(capacity_by_candidate.values()) * SELECTED_CAPACITY_PENALTY
@@ -2243,20 +2241,36 @@ def solve_schedule_with_cp_sat(
         * 2
         * len(("FL", "APS", "ACS"))
         * LICENSE_MIX_DEVIATION_PENALTY
-        + len(candidates) * FL_SELECTED_PENALTY
         + profile_choice_penalty_ceiling
         + fmp_leader_overlap_penalty_ceiling
     )
-    model.Maximize(
+    base_objective = (
         covered_sector_count * COVERED_SECTOR_WEIGHT
         - officer_selected_count * OFFICER_SELECTED_PENALTY
         - selected_count * SELECTED_PERSON_PENALTY
         - selected_capacity * SELECTED_CAPACITY_PENALTY
         - license_mix_penalty
-        - fl_preference_penalty
         - profile_choice_penalty
         - fmp_leader_overlap_penalty_value
         - assignment_penalty
+    )
+    final_license_preference_ceiling = (
+        len(candidates) if request.prefer_minimal_fl else 0
+    )
+    final_tie_break_multiplier = final_license_preference_ceiling + 1
+    final_license_preference_penalty = (
+        non_acs_selected_count if request.prefer_minimal_fl else 0
+    )
+    lower_order_penalty_ceiling = (
+        base_lower_order_penalty_ceiling * final_tie_break_multiplier
+        + final_license_preference_ceiling
+    )
+    coverage_objective_weight = (
+        COVERED_SECTOR_WEIGHT * final_tie_break_multiplier
+    )
+    model.Maximize(
+        base_objective * final_tie_break_multiplier
+        - final_license_preference_penalty
     )
 
     def warm_start_source_group(source: str | None) -> str:
@@ -2362,7 +2376,10 @@ def solve_schedule_with_cp_sat(
     def best_bound_sector_hours(best_objective_bound: float | None) -> int | None:
         if best_objective_bound is None:
             return None
-        upper_bound = int((best_objective_bound + lower_order_penalty_ceiling) // COVERED_SECTOR_WEIGHT)
+        upper_bound = int(
+            (best_objective_bound + lower_order_penalty_ceiling)
+            // coverage_objective_weight
+        )
         return min(requested_sector_hours, max(0, upper_bound))
 
     def sector_gap_to_bound(sector_hours: int, best_objective_bound: float | None) -> tuple[int | None, int | None]:
@@ -3241,9 +3258,9 @@ def calculate_demand_to_staff(
                 progress_callback,
                 58,
                 "regular_polish",
-                "Redna faza: poliranje razmerja",
-                "Poliram polno pokrit people-limit razpored po razmerju licenc.",
-                "Pokritost je že najdena; zdaj se ureja kakovost sestave.",
+                "Redna faza: poliranje licenčne sestave",
+                "Poliram polno pokrit people-limit razpored po licenčni sestavi.",
+                "Pokritost je že najdena; zdaj se ureja kakovost licenčne sestave.",
             )
             polished = solve_schedule_with_cp_sat(
                 feasibility_polish_candidates,
@@ -3410,7 +3427,10 @@ def calculate_demand_to_staff(
             "ne kot trde zgornje meje."
         )
         if request.prefer_minimal_fl:
-            notes.append("Vključena je dodatna optimizacija, ki pri enaki pokritosti zmanjšuje uporabo FL.")
+            notes.append(
+                "Vključena je zadnja optimizacija, ki med sicer enakovrednimi "
+                "rešitvami poveča uporabo ACS ter zmanjša FL/APS."
+            )
         if request.total_people > 0:
             officer_count = sum(officer_license_counts.values())
             if officer_count:
@@ -3427,7 +3447,10 @@ def calculate_demand_to_staff(
             f"ACS {available_license_counts['ACS']}) kot zgornjo mejo."
         )
         if request.prefer_minimal_fl:
-            notes.append("Vključena je dodatna optimizacija, ki pri enaki pokritosti zmanjšuje uporabo FL.")
+            notes.append(
+                "Vključena je zadnja optimizacija, ki med sicer enakovrednimi "
+                "rešitvami poveča uporabo ACS ter zmanjša FL/APS."
+            )
         else:
             notes.append("Pri enaki pokritosti model mehko sledi vpisanemu razmerju FL/APS/ACS.")
     elif uses_license_ratio:
@@ -3437,9 +3460,16 @@ def calculate_demand_to_staff(
             f"ACS {license_mix_counts['ACS']})."
         )
         if request.prefer_minimal_fl:
-            notes.append("Checkbox za čim manj FL je vklopljen, zato razmerje ne kaznuje dodatnih/odvečnih FL; FL se zmanjšuje samo pri enaki pokritosti in istem limitu ljudi.")
+            notes.append(
+                "Prednost ACS je vklopljena kot zadnji kriterij; ciljno razmerje "
+                "ostane pomembnejše, med sicer enakovrednimi rešitvami pa model "
+                "izbere več ACS in manj FL/APS."
+            )
         else:
-            notes.append("Checkbox za čim manj FL ni vklopljen; pri enaki pokritosti in istem številu ljudi model mehko sledi vpisanemu razmerju licenc.")
+            notes.append(
+                "Prednost ACS ni vklopljena; pri enaki pokritosti in istem "
+                "številu ljudi model mehko sledi vpisanemu razmerju licenc."
+            )
     else:
         notes.append(
             "Razpoložljivost ljudi ni vpisana; CP-SAT sam išče najmanjše število ljudi, "

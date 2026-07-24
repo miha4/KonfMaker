@@ -22,6 +22,7 @@ import {
 } from './api/calculator';
 import ModelAnalysis from './ModelAnalysis';
 import FutureCalculator from './FutureCalculator';
+import AirportCalculator from './AirportCalculator';
 import {
   cancellationDetail as cancellationDetailFor,
   isCancellationInProgress,
@@ -126,7 +127,7 @@ const fallbackSettings: CalculatorSettings = {
 const savedSettingsStorageKey = 'konfmaker.calculatorSettings.v1';
 const savedCalculatorInputsStorageKey = 'konfmaker.calculatorInputs.v1';
 
-type Tab = 'calculator' | 'future' | 'settings' | 'manual-configs' | 'comparison' | 'analysis' | 'theory';
+type Tab = 'calculator' | 'future' | 'airport' | 'settings' | 'manual-configs' | 'comparison' | 'analysis' | 'theory';
 type CalculationMode = 'staff_to_coverage' | 'demand_to_staff';
 type PollingTimer = ReturnType<typeof window.setInterval>;
 type SectorDemandInterval = {
@@ -8075,7 +8076,15 @@ export default function App() {
     ? '2 / Napoved SH'
     : activeTab === 'future'
       ? '3 / 15-min model'
+      : activeTab === 'airport'
+        ? '4 / LKZP'
       : '1 / Kalkulator';
+  const heroTitle = activeTab === 'airport'
+    ? 'Razporejevalnik letaliških kontrol'
+    : 'Kalkulator sektorskih ur';
+  const heroDescription = activeTab === 'airport'
+    ? 'Izbira dovoljenih izmen ter razpored dela, pavz in prisotnega asistenta za letališke kontrole.'
+    : 'Prvi programček za izračun maksimalnih sektorskih ur, obveznih FL vlog in predlagane sestave izmen.';
   const cancellationInProgress = isCancellationInProgress(
     cancelAction,
     jobStatus?.cancel_requested === true,
@@ -8090,10 +8099,8 @@ export default function App() {
       <header className="hero">
         <div>
           <p className="eyebrow">KonfMaker</p>
-          <h1>Kalkulator sektorskih ur</h1>
-          <p>
-            Prvi programček za izračun maksimalnih sektorskih ur, obveznih FL vlog in predlagane sestave izmen.
-          </p>
+          <h1>{heroTitle}</h1>
+          <p>{heroDescription}</p>
         </div>
         <div className="hero-card">
           <span>Program</span>
@@ -8107,6 +8114,9 @@ export default function App() {
         </button>
         <button className={activeTab === 'future' ? 'active' : ''} onClick={() => setActiveTab('future')} type="button">
           Futuristični kalkulator
+        </button>
+        <button className={activeTab === 'airport' ? 'active' : ''} onClick={() => setActiveTab('airport')} type="button">
+          Letališke kontrole
         </button>
         <button className={activeTab === 'settings' ? 'active' : ''} onClick={() => setActiveTab('settings')} type="button">
           Nastavitev pravil
@@ -8134,6 +8144,8 @@ export default function App() {
 
       {activeTab === 'future' ? (
         <FutureCalculator settings={settings} hourlyDemand={effectiveSectorDemand} />
+      ) : activeTab === 'airport' ? (
+        <AirportCalculator />
       ) : activeTab === 'settings' ? (
         <SettingsPanel
           settings={settings}
@@ -8306,7 +8318,7 @@ export default function App() {
                     checked={preferMinimalFl}
                     onChange={(event) => setPreferMinimalFl(event.target.checked)}
                   />
-                  <span>Pri enaki pokritosti uporabi čim manj FL</span>
+                  <span>Pri sicer enaki rešitvi uporabi čim več ACS (čim manj FL/APS)</span>
                 </label>
               </section>
             ) : null}
