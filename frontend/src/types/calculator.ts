@@ -13,6 +13,9 @@ export interface CalculatorSettings {
   cp_sat_no_improvement_seconds: number;
   cp_sat_acceptable_sector_gap: number;
   cp_sat_min_auto_stop_coverage_percent: number;
+  coverage_priority: number;
+  license_mix_priority: number;
+  short_shift_priority: number;
   include_required_shift_leaders: boolean;
   include_night_fl_requirement: boolean;
   required_night_fl_count: number;
@@ -78,6 +81,7 @@ export interface CalculatorRequest {
   leader_exception_mode: 'forbid' | 'allow';
   max_leader_exception_hours: number;
   continuation_min_sector_hours: number | null;
+  warm_start_roster_priority: number;
   solver_random_seed: number;
   preferred_manual_configuration_id?: string | null;
   warm_start?: {
@@ -229,6 +233,9 @@ export interface ManualConfigurationSummary {
   unsupported_rows: string[];
   status: string;
   model_max_sector_hours: number | string | null;
+  requested_sector_hours?: number | null;
+  missing_sector_hours?: number;
+  is_complete?: boolean;
   model_reported_sector_hours?: number | string | null;
   excel_sector_hours?: number | null;
   model_seconds: number | string | null;
@@ -246,6 +253,7 @@ export interface ManualConfigurationDetail extends ManualConfigurationSummary {
   officer_staff: OfficerStaffRule[];
   staff_rows: ManualConfigurationStaffRow[];
   manual_schedule: ManualConfigurationSchedule | null;
+  calculator_result: CalculatorResponse | null;
 }
 
 export interface ManualConfigurationLibrary {
@@ -259,6 +267,11 @@ export interface SaveUserConfigurationRequest {
   name: string | null;
   result: CalculatorResponse;
   note?: string | null;
+}
+
+export interface UpdateUserConfigurationRequest {
+  name: string;
+  note: string | null;
 }
 
 export interface DeleteManualConfigurationResponse {

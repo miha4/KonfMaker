@@ -17,6 +17,7 @@ import type {
   ParetoResponse,
   PatternLibraryProfile,
   SaveUserConfigurationRequest,
+  UpdateUserConfigurationRequest,
 } from '../types/calculator';
 import type { FutureCalculatorRequest, FutureCalculatorResponse } from '../types/futureCalculator';
 import type {
@@ -77,6 +78,35 @@ async function requestJson<T>(path: string, options?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+async function requestBlob(path: string, options?: RequestInit): Promise<Blob> {
+  const headers = new Headers(options?.headers);
+
+  if (options?.body && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json');
+  }
+
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    ...options,
+    headers,
+  });
+
+  if (!response.ok) {
+    const responseText = await response.text();
+    let message = responseText;
+    try {
+      const payload = JSON.parse(responseText) as { detail?: unknown };
+      if (typeof payload.detail === 'string') {
+        message = payload.detail;
+      }
+    } catch {
+      // Non-JSON errors are already suitable for display as plain text.
+    }
+    throw new Error(message || `API napaka ${response.status}`);
+  }
+
+  return response.blob();
+}
+
 export function getDefaultSettings(): Promise<CalculatorSettings> {
   return requestJson<CalculatorSettings>('/api/default-settings');
 }
@@ -85,6 +115,23 @@ export function calculateSectorHours(payload: CalculatorRequest): Promise<Calcul
   return requestJson<CalculatorResponse>('/api/calculate-sector-hours', {
     method: 'POST',
     body: JSON.stringify(payload),
+  });
+}
+
+export function exportCalculatorWorkbook(
+  result: CalculatorResponse,
+  name: string,
+  targetDemand: number[],
+  shifts: CalculatorSettings['shifts'],
+): Promise<Blob> {
+  return requestBlob('/api/calculator/export', {
+    method: 'POST',
+    body: JSON.stringify({
+      result,
+      name,
+      target_demand: targetDemand,
+      shifts,
+    }),
   });
 }
 
@@ -198,6 +245,19 @@ export function saveUserConfiguration(payload: SaveUserConfigurationRequest): Pr
     method: 'POST',
     body: JSON.stringify(payload),
   });
+}
+
+export function updateUserConfiguration(
+  id: string | number,
+  payload: UpdateUserConfigurationRequest,
+): Promise<ManualConfigurationDetail> {
+  return requestJson<ManualConfigurationDetail>(
+    `/api/manual-configurations/${encodeURIComponent(String(id))}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    },
+  );
 }
 
 export function deleteManualConfiguration(id: string | number): Promise<DeleteManualConfigurationResponse> {

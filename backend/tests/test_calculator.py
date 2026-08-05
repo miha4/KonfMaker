@@ -1,6 +1,7 @@
 import json
 import time
 import zipfile
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
@@ -16,21 +17,32 @@ from app.calculator import (
     SolverSnapshot,
     add_fixed_staff_people,
     add_locked_staff_people,
+    add_optional_candidates,
     calculate,
     calculate_pareto,
     can_work_slot,
     candidate_pool_from_configuration,
+    compact_candidate_pool_for_people_limit,
     configuration_seed_candidate_pools,
     coverage_shortfall_warning,
+    create_mandatory_people,
+    enabled_shift_rules,
     hour_index,
+    max_required_workers_per_hour,
     PersonState,
+    required_indexes_for_seed_people,
     role_allows_sector_slot,
     role_edge_exception_penalty,
     schedule_leader_exception_hours,
     shift_map_for_request,
     solve_schedule_with_cp_sat,
 )
-from app.config_library import complete_configuration, manual_configuration_one_down, settings_for_manual_schedule_evaluation
+from app.config_library import (
+    complete_configuration,
+    manual_configuration_calculator_result,
+    manual_configuration_one_down,
+    settings_for_manual_schedule_evaluation,
+)
 from app.jobs import (
     CalculationJob,
     _consume_warm_start_snapshot_locked,
@@ -668,8 +680,34 @@ def test_user_configuration_can_be_deleted(monkeypatch, tmp_path):
     assert stored_records[0]["schema_version"] == 2
     assert "result" not in stored_records[0]
 
+    update_response = client.patch(
+        f"/api/manual-configurations/{saved_id}",
+        json={"name": "  Preimenovana konfiguracija  ", "note": "  Opomba uporabnika  "},
+    )
+    assert update_response.status_code == 200
+    assert update_response.json()["name"] == "Preimenovana konfiguracija"
+    assert update_response.json()["note"] == "Opomba uporabnika"
+
+    stored_after_update = json.loads(
+        (tmp_path / "user_configs.json").read_text(encoding="utf-8")
+    )["configurations"][0]
+    assert stored_after_update["name"] == "Preimenovana konfiguracija"
+    assert stored_after_update["note"] == "Opomba uporabnika"
+    assert stored_after_update["updated_at"]
+
+    clear_note_response = client.patch(
+        f"/api/manual-configurations/{saved_id}",
+        json={"name": "Preimenovana konfiguracija", "note": "   "},
+    )
+    assert clear_note_response.status_code == 200
+    assert clear_note_response.json()["note"] is None
+
     library_response = client.get("/api/manual-configurations")
-    assert any(item["id"] == saved_id for item in library_response.json()["configurations"])
+    updated_summary = next(
+        item for item in library_response.json()["configurations"] if item["id"] == saved_id
+    )
+    assert updated_summary["name"] == "Preimenovana konfiguracija"
+    assert updated_summary["note"] is None
 
     delete_response = client.delete(f"/api/manual-configurations/{saved_id}")
     assert delete_response.status_code == 200
@@ -681,6 +719,68 @@ def test_user_configuration_can_be_deleted(monkeypatch, tmp_path):
 
     excel_delete_response = client.delete("/api/manual-configurations/1")
     assert excel_delete_response.status_code == 400
+    excel_update_response = client.patch(
+        "/api/manual-configurations/1",
+        json={"name": "Ne sme uspeti", "note": None},
+    )
+    assert excel_update_response.status_code == 400
+
+
+def test_incomplete_user_configuration_can_be_saved_and_reopened(monkeypatch, tmp_path):
+    library_path = tmp_path / "user_configs.json"
+    monkeypatch.setenv("KONFMAKER_USER_CONFIG_LIBRARY_JSON", str(library_path))
+    client = TestClient(app)
+    complete_result = calculate(
+        make_request(
+            total=2,
+            fl=2,
+            aps=0,
+            acs=0,
+            fmp=False,
+            requested_sector_counts=[1] + [0] * 23,
+            include_required_shift_leaders=False,
+            include_night_fl_requirement=False,
+            required_night_fl_count=0,
+            cp_sat_time_limit_seconds=2,
+            cp_sat_no_improvement_seconds=0,
+        )
+    )
+    partial_result = complete_result.model_copy(
+        update={
+            "requested_sector_hours": complete_result.max_sector_hours + 2,
+            "missing_sector_hours": 2,
+        }
+    )
+
+    save_response = client.post(
+        "/api/manual-configurations/user",
+        json={"name": "Delna konfiguracija", "result": partial_result.model_dump(mode="json")},
+    )
+
+    assert save_response.status_code == 200
+    saved = save_response.json()
+    assert saved["is_complete"] is False
+    assert saved["status"] == "NEPOPOLNA (-2 SH)"
+    assert saved["model_max_sector_hours"] == complete_result.max_sector_hours
+    assert saved["requested_sector_hours"] == complete_result.max_sector_hours + 2
+    assert saved["missing_sector_hours"] == 2
+    assert saved["calculator_result"]["missing_sector_hours"] == 2
+
+    stored_record = json.loads(library_path.read_text(encoding="utf-8"))["configurations"][0]
+    assert stored_record["summary"]["is_complete"] is False
+    assert stored_record["result"]["missing_sector_hours"] == 2
+
+    detail_response = client.get(f"/api/manual-configurations/{saved['id']}")
+    assert detail_response.status_code == 200
+    reopened = detail_response.json()
+    assert reopened["is_complete"] is False
+    assert reopened["calculator_result"]["requested_sector_hours"] == complete_result.max_sector_hours + 2
+    assert reopened["calculator_result"]["missing_sector_hours"] == 2
+
+    listed = client.get("/api/manual-configurations").json()["configurations"]
+    saved_summary = next(item for item in listed if item["id"] == saved["id"])
+    assert saved_summary["is_complete"] is False
+    assert saved_summary["missing_sector_hours"] == 2
 
 
 def test_concurrent_user_configuration_saves_keep_both_records(monkeypatch, tmp_path):
@@ -764,6 +864,151 @@ def test_manual_configuration_detail_includes_excel_schedule(monkeypatch, tmp_pa
         "lower_worker": "B",
         "upper_worker": "C",
     }
+    calculator_result = detail["calculator_result"]
+    assert calculator_result["solver_status"] == "MANUAL_IMPORT"
+    assert calculator_result["max_sector_hours"] == 2
+    assert calculator_result["requested_sector_hours"] == 2
+    assert calculator_result["missing_sector_hours"] == 0
+    assert calculator_result["hourly_coverage"][0] == first_hour
+    assert calculator_result["shift_summary"]
+
+
+def test_manual_configuration_result_assigns_roster_and_calculator_metrics():
+    hourly_coverage = [
+        {
+            "hour": f"{(7 + slot) % 24:02d}:00–{(8 + slot) % 24:02d}:00",
+            "open_sectors": 1 if slot == 0 else 0,
+            "workers": ["Vi1", "B"] if slot == 0 else [],
+            "sector_workers": [
+                {
+                    "sector_name": "LOWER",
+                    "lower_worker": "Vi1",
+                    "upper_worker": "B",
+                }
+                if slot == 0
+                else None
+            ],
+        }
+        for slot in range(24)
+    ]
+    detail = {
+        "id": "manual:test",
+        "name": "Test ročni rezultat",
+        "source_label": "Excel ročna konfiguracija",
+        "parsed_total": 3,
+        "license_counts": {"FL": 1, "APS": 1, "ACS": 1},
+        "staff_rows": [
+            {
+                "source": "regular",
+                "shift": "A7",
+                "role": "V1",
+                "fl": 1,
+                "aps": 0,
+                "acs": 0,
+                "total": 1,
+            },
+            {
+                "source": "regular",
+                "shift": "A7",
+                "role": None,
+                "fl": 0,
+                "aps": 1,
+                "acs": 1,
+                "total": 2,
+            },
+        ],
+        "manual_schedule": {
+            "people": [
+                {"label": "Vi1", "shift": "Vi1", "sector_hours": 1, "role": "V1", "source": "regular"},
+                {"label": "B", "shift": "A7", "sector_hours": 1, "role": None, "source": "regular"},
+                {"label": "C", "shift": "A7", "sector_hours": 0, "role": None, "source": "regular"},
+            ],
+            "hourly_coverage": hourly_coverage,
+            "max_sector_hours": 1,
+            "scheduled_person_hours": 2,
+        },
+    }
+
+    result = manual_configuration_calculator_result(detail)
+
+    assert result is not None
+    assert result.feasible is True
+    assert result.max_sector_hours == 1
+    assert result.planned_people == 3
+    assert result.active_people == 2
+    assert result.unused_people == 1
+    assert result.scheduled_person_hours == 2
+    assert result.missing_sector_hours == 0
+    assert result.solver_status == "MANUAL_IMPORT"
+    assert result.people[0].id == "Vi1"
+    assert result.people[0].license == "FL"
+    assert result.people[0].shift == "A7"
+    assert result.people[0].role == "V1"
+    assert Counter(person.license for person in result.people) == Counter({"FL": 1, "APS": 1, "ACS": 1})
+    assert any(row.shift == "V1/A7" and row.fl == 1 for row in result.shift_summary)
+
+
+def test_manual_configuration_result_assigns_licenses_from_worked_sectors():
+    hourly_coverage = [
+        {
+            "hour": f"{(7 + slot) % 24:02d}:00–{(8 + slot) % 24:02d}:00",
+            "open_sectors": 1 if slot < 2 else 0,
+            "workers": ["J"] if slot == 0 else ["H", "I"] if slot == 1 else [],
+            "sector_workers": [
+                {
+                    "sector_name": "LOWER",
+                    "lower_worker": "J",
+                    "upper_worker": "J",
+                }
+                if slot == 0
+                else {
+                    "sector_name": "UPPER",
+                    "lower_worker": "H",
+                    "upper_worker": "I",
+                }
+                if slot == 1
+                else None
+            ],
+        }
+        for slot in range(24)
+    ]
+    detail = {
+        "id": "manual:license-mapping",
+        "name": "Test povezovanja licenc",
+        "source_label": "Excel ročna konfiguracija",
+        "parsed_total": 3,
+        "license_counts": {"FL": 0, "APS": 1, "ACS": 2},
+        "staff_rows": [
+            {
+                "source": "regular",
+                "shift": "A8",
+                "role": None,
+                "fl": 0,
+                "aps": 1,
+                "acs": 2,
+                "total": 3,
+            },
+        ],
+        "manual_schedule": {
+            "people": [
+                {"label": "H", "shift": "A8", "sector_hours": 1, "role": None, "source": "regular"},
+                {"label": "I", "shift": "A8", "sector_hours": 1, "role": None, "source": "regular"},
+                {"label": "J", "shift": "A8", "sector_hours": 1, "role": None, "source": "regular"},
+            ],
+            "hourly_coverage": hourly_coverage,
+            "max_sector_hours": 2,
+            "scheduled_person_hours": 4,
+        },
+    }
+
+    result = manual_configuration_calculator_result(detail)
+
+    assert result is not None
+    people_by_id = {person.id: person for person in result.people}
+    assert people_by_id["J"].license == "APS"
+    assert people_by_id["H"].license == "ACS"
+    assert people_by_id["I"].license == "ACS"
+    assert result.warnings == []
 
 
 def test_manual_configuration_focus_audit_endpoint(monkeypatch, tmp_path):
@@ -906,6 +1151,9 @@ def test_default_settings_include_officer_shifts():
     assert data["cp_sat_no_improvement_seconds"] == 180
     assert data["cp_sat_acceptable_sector_gap"] == 0
     assert data["cp_sat_min_auto_stop_coverage_percent"] == 95
+    assert data["coverage_priority"] == 100
+    assert data["license_mix_priority"] == 25
+    assert data["short_shift_priority"] == 100
     assert data["include_night_fl_requirement"] is True
     assert data["required_night_fl_count"] == 4
     assert data["v1_sector_limit"] == 1
@@ -1049,6 +1297,98 @@ def test_configuration_seed_ignores_disabled_shift():
     assert [person.shift for person in seed_people] == ["A11"]
 
 
+def test_unchecked_fmp_is_removed_from_fixed_locked_and_seed_people():
+    request = make_request(
+        total=2,
+        fl=2,
+        aps=0,
+        acs=0,
+        fmp=False,
+        requested_sector_counts=[0] * 24,
+        include_required_shift_leaders=False,
+        include_night_fl_requirement=False,
+        fixed_staff=[{"count": 1, "license": "FL", "shift": "A9", "role": "FMP"}],
+        locked_staff=[{"count": 1, "license": "FL", "shift": "A9", "role": "FMP", "label": "FMP"}],
+    )
+
+    fixed_people, next_id, fixed_notes = add_fixed_staff_people(request, [], 0)
+    locked_people, _next_id, locked_notes = add_locked_staff_people(request, fixed_people, next_id)
+    configuration = SimpleNamespace(
+        fixed_staff=[
+            SimpleNamespace(count=1, license="FL", shift="A9", role="FMP"),
+            SimpleNamespace(count=1, license="ACS", shift="A14", role=None),
+        ],
+        officer_staff=[],
+    )
+    seed_people, required_indexes = candidate_pool_from_configuration(
+        locked_people,
+        set(range(len(locked_people))),
+        configuration,
+        include_fmp=False,
+    )
+
+    assert not any(person.role == "FMP" for person in fixed_people)
+    assert not any(person.role == "FMP" for person in locked_people)
+    assert not any(person.role == "FMP" for person in seed_people)
+    assert required_indexes == set()
+    assert [person.shift for person in seed_people] == ["A14"]
+    assert any("FMP ni vključen" in note for note in fixed_notes)
+    assert any("FMP ni vključen" in note for note in locked_notes)
+
+
+def test_compact_candidate_pool_keeps_profile_edge_capacity_when_more_shifts_are_enabled():
+    requested = [3, 3] + [4] * 11 + [3] * 4 + [2] + [1] * 5 + [2]
+    request = make_request(
+        total=28,
+        fl=0,
+        aps=0,
+        acs=0,
+        fmp=False,
+        requested_sector_counts=requested,
+        calculation_mode="demand_to_staff",
+        license_mix_percent={"fl": 50, "aps": 0, "acs": 50},
+        cp_sat_no_improvement_seconds=0,
+    )
+    people, next_id, _notes, _warnings = create_mandatory_people(request, [], 0)
+    required_indexes = required_indexes_for_seed_people(people, request)
+    per_shift_count = max(2, min(10, max_required_workers_per_hour(requested)))
+    for license_name in ("FL", "ACS"):
+        people, next_id = add_optional_candidates(
+            people,
+            next_id,
+            license_name,
+            per_shift_count,
+            enabled_shift_rules(request.settings.shifts),
+            requested,
+            {},
+        )
+
+    shift_map = shift_map_for_request(request)
+    compact, _compact_required = compact_candidate_pool_for_people_limit(
+        people,
+        required_indexes,
+        request,
+        shift_map,
+        requested,
+        28,
+        {"FL": 50, "APS": 0, "ACS": 50},
+    )
+
+    def usable_on_slot(person, slot):
+        return (
+            slot in calculator_module.shift_slots(shift_map[person.shift])
+            and role_edge_exception_penalty(person, slot, shift_map) == 0
+        )
+
+    opening_workers = [person for person in compact if usable_on_slot(person, 0)]
+    assert len(opening_workers) >= 6
+    assert sum(person.license in {"FL", "APS"} for person in opening_workers) >= 2
+    assert sum(person.license in {"FL", "ACS"} for person in opening_workers) >= 4
+
+    closing_workers = [person for person in compact if usable_on_slot(person, 23)]
+    assert len(closing_workers) >= 4
+
+
 def test_disabled_regular_shift_is_skipped_for_fixed_and_locked_staff():
     settings = make_request(
         include_required_shift_leaders=False,
@@ -1123,7 +1463,68 @@ def test_demand_to_staff_uses_office_pool_as_last_resort():
 
     assert result.max_sector_hours == 1
     assert any(person.source == "office-pool" and person.sector_hours > 0 for person in result.people)
+    assert any(
+        person.source == "regular" and person.shift == "A7" and person.sector_hours > 0
+        for person in result.people
+    )
+    assert not any(person.role == "FMP" for person in result.people)
     assert any("Operativni office pool je bil uporabljen šele kot fallback" in note for note in result.notes)
+
+
+def test_warm_start_roster_priority_changes_only_needed_shifts():
+    requested = [0, 1] + [0] * 22
+    candidates = [
+        PersonState(id="A8-1", license="FL", shift="A8"),
+        PersonState(id="A8-2", license="FL", shift="A8"),
+        PersonState(id="A7-1", license="FL", shift="A7"),
+        PersonState(id="A7-2", license="FL", shift="A7"),
+    ]
+    warm_start = {
+        "people": [
+            {"id": "A8-1", "license": "FL", "shift": "A8", "role": None, "source": "regular"},
+            {"id": "A8-2", "license": "FL", "shift": "A8", "role": None, "source": "regular"},
+        ],
+        "hourly_coverage": [],
+    }
+    base_request = make_request(
+        total=2,
+        fl=2,
+        aps=0,
+        acs=0,
+        fmp=False,
+        requested_sector_counts=requested,
+        include_required_shift_leaders=False,
+        include_night_fl_requirement=False,
+        cp_sat_time_limit_seconds=2,
+        cp_sat_no_improvement_seconds=0,
+    ).model_copy(update={"warm_start": warm_start})
+
+    unprotected = solve_schedule_with_cp_sat(
+        candidates,
+        set(),
+        base_request,
+        shift_map_for_request(base_request),
+        requested,
+        license_caps={"FL": 2},
+        selected_total_cap=2,
+        minimum_covered_sector_hours=1,
+    )
+    protected_request = base_request.model_copy(update={"warm_start_roster_priority": 100})
+    protected = solve_schedule_with_cp_sat(
+        candidates,
+        set(),
+        protected_request,
+        shift_map_for_request(protected_request),
+        requested,
+        license_caps={"FL": 2},
+        selected_total_cap=2,
+        minimum_covered_sector_hours=1,
+    )
+
+    assert unprotected is not None
+    assert protected is not None
+    assert sorted(person.shift for person in unprotected[0].people) == ["A7", "A7"]
+    assert sorted(person.shift for person in protected[0].people) == ["A8", "A8"]
 
 
 def test_required_role_sector_limits_are_respected():

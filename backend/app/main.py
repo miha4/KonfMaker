@@ -21,6 +21,7 @@ from .config_library import (
     manual_configuration_library,
     manual_configuration_one_down,
     save_user_configuration,
+    update_user_configuration,
 )
 from .future_calculator import FutureCalculatorRequest, calculate_future_sector_hours
 from .jobs import (
@@ -37,14 +38,17 @@ from .jobs import (
 )
 from .models import (
     CalculatorRequest,
+    CalculatorWorkbookRequest,
     CompareConfigurationRequest,
     CompleteConfigurationRequest,
     DEFAULT_INCLUDE_NIGHT_FL_REQUIREMENT,
     DEFAULT_REQUIRED_NIGHT_FL_COUNT,
     ManualConfigurationOneDownRequest,
     SaveUserConfigurationRequest,
+    UpdateUserConfigurationRequest,
 )
 from .pattern_core import pattern_library_profile
+from .result_workbook import build_result_workbook
 
 app = FastAPI(title="KonfMaker API", version="0.1.0")
 
@@ -63,7 +67,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["null"],
     allow_origin_regex=r"https://.*\.app\.github\.dev|http://localhost:\d+|http://127\.0\.0\.1:\d+",
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
     allow_credentials=False,
     max_age=86400,
@@ -85,6 +89,9 @@ def default_settings() -> dict[str, object]:
         "cp_sat_no_improvement_seconds": 180,
         "cp_sat_acceptable_sector_gap": 0,
         "cp_sat_min_auto_stop_coverage_percent": 95,
+        "coverage_priority": 100,
+        "license_mix_priority": 25,
+        "short_shift_priority": 100,
         "include_required_shift_leaders": True,
         "include_night_fl_requirement": DEFAULT_INCLUDE_NIGHT_FL_REQUIREMENT,
         "required_night_fl_count": DEFAULT_REQUIRED_NIGHT_FL_COUNT,
@@ -100,6 +107,16 @@ def default_settings() -> dict[str, object]:
 @app.post("/api/calculate-sector-hours")
 def calculate_sector_hours(request: CalculatorRequest):
     return calculate(request)
+
+
+@app.post("/api/calculator/export")
+def export_calculator_result(request: CalculatorWorkbookRequest):
+    content = build_result_workbook(request)
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="konfmaker_konfiguracija.xlsx"'},
+    )
 
 
 @app.post("/api/future-calculator")
@@ -161,6 +178,19 @@ def delete_manual_configuration(configuration_id: str) -> dict[str, object]:
         return delete_user_configuration(configuration_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.patch("/api/manual-configurations/{configuration_id}")
+def update_manual_configuration(
+    configuration_id: str,
+    request: UpdateUserConfigurationRequest,
+) -> dict[str, object]:
+    try:
+        return update_user_configuration(configuration_id, request)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Urejanje uporabniške konfiguracije ni uspelo: {exc}") from exc
 
 
 @app.get("/api/manual-configurations/focus-audit")

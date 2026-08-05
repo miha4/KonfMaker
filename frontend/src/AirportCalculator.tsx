@@ -350,7 +350,7 @@ export default function AirportCalculator() {
         <div className="airport-section-heading">
           <div>
             <p className="eyebrow">LKZP</p>
-            <h2>Letališka kontrola</h2>
+            <h2>LKZP odprtost</h2>
           </div>
           <span className="airport-rule-badge">3 h / 1 h</span>
         </div>

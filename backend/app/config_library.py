@@ -17,7 +17,17 @@ from typing import Callable
 from uuid import uuid4
 from xml.etree import ElementTree as ET
 
-from .calculator import CALC_PHASE_PROGRESS_PREFIX, CalculationCancelled, DEFAULT_OFFICER_SHIFTS, DEFAULT_SHIFTS, calculate, sector_display_names_for_max
+from .calculator import (
+    CALC_PHASE_PROGRESS_PREFIX,
+    CalculationCancelled,
+    DEFAULT_OFFICER_SHIFTS,
+    DEFAULT_SHIFTS,
+    baseline_min_people_for_profile,
+    calculate,
+    max_sector_hours_for_shift,
+    sector_allowed_licenses,
+    sector_display_names_for_max,
+)
 from .models import (
     CalculatorRequest,
     CalculatorResponse,
@@ -30,6 +40,7 @@ from .models import (
     OfficerStaffRule,
     SaveUserConfigurationRequest,
     ShiftRule,
+    UpdateUserConfigurationRequest,
 )
 
 
@@ -650,6 +661,26 @@ def _user_configuration_summary(record: dict[str, object]) -> dict[str, object]:
     if isinstance(stored_summary, dict):
         planned_people = int(stored_summary.get("planned_people", 0) or 0)
         max_sector_hours = int(stored_summary.get("max_sector_hours", 0) or 0)
+        requested_sector_hours = int(
+            stored_summary.get("requested_sector_hours", max_sector_hours) or 0
+        )
+        missing_sector_hours = max(
+            0,
+            int(
+                stored_summary.get(
+                    "missing_sector_hours",
+                    max(0, requested_sector_hours - max_sector_hours),
+                )
+                or 0
+            ),
+        )
+        feasible = bool(stored_summary.get("feasible", True))
+        stored_is_complete = stored_summary.get("is_complete")
+        is_complete = (
+            stored_is_complete
+            if isinstance(stored_is_complete, bool)
+            else feasible and missing_sector_hours == 0
+        )
         stored_license_counts = stored_summary.get("license_counts")
         license_counts = {
             license_name: int(stored_license_counts.get(license_name, 0) or 0)
@@ -661,6 +692,10 @@ def _user_configuration_summary(record: dict[str, object]) -> dict[str, object]:
         result = CalculatorResponse.model_validate(record["result"])
         planned_people = result.planned_people
         max_sector_hours = result.max_sector_hours
+        requested_sector_hours = result.requested_sector_hours
+        missing_sector_hours = result.missing_sector_hours
+        feasible = result.feasible
+        is_complete = result.feasible and result.missing_sector_hours == 0
         license_counts = _license_counts_from_result(result)
     return {
         "id": str(record["id"]),
@@ -671,12 +706,19 @@ def _user_configuration_summary(record: dict[str, object]) -> dict[str, object]:
         "waiting_count": 0,
         "license_counts": license_counts,
         "unsupported_rows": [],
-        "status": "UPORABNIK",
+        "status": "UPORABNIK" if is_complete else f"NEPOPOLNA (-{missing_sector_hours} SH)",
         "model_max_sector_hours": max_sector_hours,
+        "requested_sector_hours": requested_sector_hours,
+        "missing_sector_hours": missing_sector_hours,
+        "is_complete": is_complete,
         "model_seconds": None,
         "has_manual_schedule": True,
         "source_type": "user",
-        "source_label": "Shranjena s strani uporabnika",
+        "source_label": (
+            "Shranjena s strani uporabnika"
+            if is_complete
+            else "Nepopolna uporabniška konfiguracija"
+        ),
         "created_at": record.get("created_at"),
         "note": record.get("note"),
     }
@@ -697,7 +739,7 @@ def _user_configuration_detail(record: dict[str, object]) -> dict[str, object]:
         fixed_staff = _fixed_staff_from_result(result)
         officer_staff = _officer_staff_from_result(result)
         staff_rows = _staff_rows_from_result(result)
-    return {
+    detail = {
         **summary,
         "source_path": str(path),
         "workbook_path": None,
@@ -706,6 +748,12 @@ def _user_configuration_detail(record: dict[str, object]) -> dict[str, object]:
         "staff_rows": staff_rows,
         "manual_schedule": manual_schedule,
     }
+    stored_result = record.get("result")
+    if isinstance(stored_result, dict):
+        detail["calculator_result"] = CalculatorResponse.model_validate(stored_result)
+    else:
+        detail["calculator_result"] = manual_configuration_calculator_result(detail)
+    return detail
 
 
 def user_configuration_detail(configuration_id: str) -> dict[str, object]:
@@ -717,8 +765,7 @@ def user_configuration_detail(configuration_id: str) -> dict[str, object]:
 
 def save_user_configuration(payload: SaveUserConfigurationRequest) -> dict[str, object]:
     result = payload.result
-    if not result.feasible or result.missing_sector_hours > 0:
-        raise ValueError("Shraniš lahko samo izvedljivo konfiguracijo brez manjkajočih sektorskih ur.")
+    is_complete = result.feasible and result.missing_sector_hours == 0
     name = (payload.name or "").strip()
     if not name:
         name = f"Shranjena {datetime.now().strftime('%d.%m. %H:%M')}"
@@ -733,6 +780,10 @@ def save_user_configuration(payload: SaveUserConfigurationRequest) -> dict[str, 
         "summary": {
             "planned_people": result.planned_people,
             "max_sector_hours": result.max_sector_hours,
+            "requested_sector_hours": result.requested_sector_hours,
+            "missing_sector_hours": result.missing_sector_hours,
+            "feasible": result.feasible,
+            "is_complete": is_complete,
             "license_counts": _license_counts_from_result(result),
         },
         "fixed_staff": _fixed_staff_from_result(result),
@@ -740,11 +791,46 @@ def save_user_configuration(payload: SaveUserConfigurationRequest) -> dict[str, 
         "staff_rows": _staff_rows_from_result(result),
         "manual_schedule": manual_schedule,
     }
+    # A compact schedule is sufficient for complete configurations. For a partial
+    # result we also keep the exact response so reopening it cannot mistake the
+    # achieved coverage for the original target and hide the missing SH.
+    if not is_complete:
+        record["result"] = result.model_dump(mode="json")
     with _USER_CONFIGURATION_LOCK:
         records = _read_user_configuration_records()
         records.insert(0, record)
         _write_user_configuration_records(records)
     return _user_configuration_detail(record)
+
+
+def update_user_configuration(
+    configuration_id: str,
+    payload: UpdateUserConfigurationRequest,
+) -> dict[str, object]:
+    if not str(configuration_id).startswith("user:"):
+        raise ValueError("Urejaš lahko samo konfiguracije, shranjene s strani uporabnika.")
+
+    updated_record: dict[str, object] | None = None
+    with _USER_CONFIGURATION_LOCK:
+        records = _read_user_configuration_records()
+        next_records: list[dict[str, object]] = []
+        for record in records:
+            if str(record.get("id")) != configuration_id:
+                next_records.append(record)
+                continue
+            updated_record = {
+                **record,
+                "name": payload.name,
+                "note": payload.note,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            next_records.append(updated_record)
+
+        if updated_record is None:
+            raise ValueError("Uporabniška konfiguracija ne obstaja.")
+        _write_user_configuration_records(next_records)
+
+    return _user_configuration_detail(updated_record)
 
 
 def delete_user_configuration(configuration_id: str) -> dict[str, object]:
@@ -1002,6 +1088,467 @@ def _manual_schedule_max_sector_hours(manual_schedule: dict[str, object] | None)
     return total
 
 
+def _manual_person_role(label: str, raw_role: object) -> str | None:
+    role = str(raw_role or "").strip().upper()
+    if role in {"V1", "V2", "V3", "FMP"}:
+        return role
+    normalized_label = label.strip().upper()
+    return {
+        "VI1": "V1",
+        "V1": "V1",
+        "VI2": "V2",
+        "V2": "V2",
+        "VI3": "V3",
+        "V3": "V3",
+        "FMP": "FMP",
+    }.get(normalized_label)
+
+
+def _manual_worker_label(value: object) -> str | None:
+    label = _clean_excel_label(value)
+    if label is None:
+        return None
+    if label.startswith("(") and label.endswith(")"):
+        unwrapped = label[1:-1].strip()
+        return unwrapped or None
+    return label
+
+
+def _manual_worker_labels(hour: dict[str, object]) -> list[str]:
+    raw_workers = hour.get("workers")
+    if isinstance(raw_workers, list):
+        workers = [
+            label
+            for worker in raw_workers
+            if (label := _manual_worker_label(worker)) is not None
+        ]
+        if workers:
+            return workers
+
+    workers: list[str] = []
+    raw_assignments = hour.get("sector_workers")
+    if not isinstance(raw_assignments, list):
+        return workers
+    for assignment in raw_assignments:
+        if not isinstance(assignment, dict):
+            continue
+        for field in ("lower_worker", "upper_worker"):
+            label = _manual_worker_label(assignment.get(field))
+            if label is not None:
+                workers.append(label)
+    return workers
+
+
+def _manual_roster_allocations(detail: dict[str, object]) -> list[dict[str, str | None]]:
+    allocations: list[dict[str, str | None]] = []
+    raw_rows = detail.get("staff_rows")
+    if not isinstance(raw_rows, list):
+        return allocations
+    for row in raw_rows:
+        if not isinstance(row, dict):
+            continue
+        shift = str(row.get("shift") or "").strip()
+        if not shift:
+            continue
+        role = _manual_person_role("", row.get("role"))
+        source = str(row.get("source") or "regular").strip() or "regular"
+        for license_name in LICENSES:
+            count = max(0, int(_excel_number(row.get(license_name.lower())) or 0))
+            allocations.extend(
+                {
+                    "license": license_name,
+                    "shift": shift,
+                    "role": role,
+                    "source": source,
+                }
+                for _ in range(count)
+            )
+    return allocations
+
+
+def _manual_allocation_index(
+    descriptor: dict[str, str | None],
+    allocations: list[dict[str, str | None]],
+    allowed_licenses: set[str],
+) -> int | None:
+    if not allocations:
+        return None
+
+    descriptor_role = descriptor.get("role")
+    descriptor_shift = descriptor.get("shift")
+    descriptor_source = descriptor.get("source")
+    compatible_indexes = [
+        index
+        for index, allocation in enumerate(allocations)
+        if allocation.get("license") in allowed_licenses
+    ]
+    candidate_indexes = compatible_indexes or list(range(len(allocations)))
+
+    def score(index: int) -> tuple[int, int]:
+        allocation = allocations[index]
+        allocation_role = allocation.get("role")
+        value = 0
+        if descriptor_role and allocation_role == descriptor_role:
+            value += 100
+        elif descriptor_role or allocation_role:
+            value -= 100
+        if descriptor_shift and allocation.get("shift") == descriptor_shift:
+            value += 40
+        if descriptor_source and allocation.get("source") == descriptor_source:
+            value += 10
+        license_name = allocation.get("license")
+        if allowed_licenses == {"APS", "FL"} and license_name == "APS":
+            value += 5
+        elif allowed_licenses == {"ACS", "FL"} and license_name == "ACS":
+            value += 5
+        return value, -index
+
+    return max(candidate_indexes, key=score)
+
+
+def _manual_allowed_licenses(
+    descriptor: dict[str, str | None],
+    worker_sectors: dict[str, set[str]],
+) -> set[str]:
+    if descriptor.get("role") in {"V1", "V2", "V3", "FMP"}:
+        return {"FL"}
+
+    allowed = set(LICENSES)
+    worker_key = str(descriptor.get("id") or "").casefold()
+    for sector_name in worker_sectors.get(worker_key, set()):
+        allowed.intersection_update(sector_allowed_licenses(sector_name))
+    return allowed or set(LICENSES)
+
+
+def _manual_shift_summary(people: list[dict[str, object]]) -> list[dict[str, object]]:
+    counts: dict[str, Counter[str]] = {}
+    shift_order = [shift.code for shift in [*DEFAULT_SHIFTS, *DEFAULT_OFFICER_SHIFTS]]
+    for person in people:
+        shift = str(person.get("shift") or "")
+        role = str(person.get("role") or "").strip().upper() or None
+        source = str(person.get("source") or "regular")
+        if source == "officer":
+            key = f"officer/{shift}"
+        else:
+            key = f"{role}/{shift}" if role else shift
+        counts.setdefault(key, Counter())[str(person.get("license") or "FL")] += 1
+
+    def sort_key(item: tuple[str, Counter[str]]) -> tuple[int, str]:
+        shift = item[0].split("/")[-1]
+        try:
+            return shift_order.index(shift), item[0]
+        except ValueError:
+            return 999, item[0]
+
+    return [
+        {
+            "shift": shift,
+            "fl": counter["FL"],
+            "aps": counter["APS"],
+            "acs": counter["ACS"],
+            "total": counter["FL"] + counter["APS"] + counter["ACS"],
+        }
+        for shift, counter in sorted(counts.items(), key=sort_key)
+    ]
+
+
+def manual_configuration_calculator_result(detail: dict[str, object]) -> CalculatorResponse | None:
+    manual_schedule = detail.get("manual_schedule")
+    if not isinstance(manual_schedule, dict):
+        return None
+    raw_hours = manual_schedule.get("hourly_coverage")
+    if not isinstance(raw_hours, list) or not raw_hours:
+        return None
+
+    hourly_coverage: list[dict[str, object]] = []
+    worked_hours: Counter[str] = Counter()
+    worker_label_by_key: dict[str, str] = {}
+    worker_sectors: dict[str, set[str]] = {}
+    for slot in range(24):
+        raw_hour = raw_hours[slot] if slot < len(raw_hours) and isinstance(raw_hours[slot], dict) else {}
+        hour = dict(raw_hour)
+        workers = _manual_worker_labels(hour)
+        for worker in workers:
+            key = worker.casefold()
+            worked_hours[key] += 1
+            worker_label_by_key.setdefault(key, worker)
+        raw_assignments = hour.get("sector_workers")
+        assignments = []
+        if isinstance(raw_assignments, list):
+            for raw_assignment in raw_assignments:
+                if not isinstance(raw_assignment, dict):
+                    assignments.append(None)
+                    continue
+                assignments.append(
+                    {
+                        **raw_assignment,
+                        "lower_worker": _manual_worker_label(raw_assignment.get("lower_worker")) or "",
+                        "upper_worker": _manual_worker_label(raw_assignment.get("upper_worker")) or "",
+                    }
+                )
+                sector_name = str(raw_assignment.get("sector_name") or "").strip().upper()
+                if sector_name:
+                    for field in ("lower_worker", "upper_worker"):
+                        worker_label = _manual_worker_label(raw_assignment.get(field))
+                        if worker_label is not None:
+                            worker_sectors.setdefault(worker_label.casefold(), set()).add(sector_name)
+        open_sectors_value = _excel_number(hour.get("open_sectors"))
+        open_sectors = (
+            int(open_sectors_value)
+            if open_sectors_value is not None
+            else sum(1 for assignment in assignments if isinstance(assignment, dict))
+        )
+        hourly_coverage.append(
+            {
+                "hour": _clean_excel_label(hour.get("hour")) or _hour_label_for_slot(slot),
+                "open_sectors": max(0, open_sectors),
+                "workers": workers,
+                "sector_workers": assignments,
+            }
+        )
+
+    descriptors: list[dict[str, str | None]] = []
+    seen_labels: set[str] = set()
+    raw_people = manual_schedule.get("people")
+    if isinstance(raw_people, list):
+        for raw_person in raw_people:
+            if not isinstance(raw_person, dict):
+                continue
+            label = _clean_excel_label(raw_person.get("label"))
+            if label is None or label.casefold() in seen_labels:
+                continue
+            seen_labels.add(label.casefold())
+            descriptors.append(
+                {
+                    "id": label,
+                    "shift": _clean_excel_label(raw_person.get("shift")),
+                    "role": _manual_person_role(label, raw_person.get("role")),
+                    "source": _clean_excel_label(raw_person.get("source")) or "regular",
+                }
+            )
+    for key, label in worker_label_by_key.items():
+        if key in seen_labels:
+            continue
+        seen_labels.add(key)
+        descriptors.append(
+            {
+                "id": label,
+                "shift": None,
+                "role": _manual_person_role(label, None),
+                "source": "regular",
+            }
+        )
+
+    allocations = _manual_roster_allocations(detail)
+    desired_license_counts = detail.get("license_counts")
+    desired_license_counts = desired_license_counts if isinstance(desired_license_counts, dict) else {}
+    assigned_license_counts: Counter[str] = Counter()
+    people: list[dict[str, object]] = []
+    shift_lookup = _shift_lookup()
+    settings = settings_for_manual_schedule_evaluation(manual_schedule)
+    role_limits = {
+        "V1": settings.v1_sector_limit,
+        "V2": settings.v2_sector_limit,
+        "V3": settings.v3_sector_limit,
+        "FMP": settings.fmp_sector_limit,
+    }
+
+    def fallback_license() -> str:
+        for license_name in LICENSES:
+            desired = int(desired_license_counts.get(license_name, 0) or 0)
+            if assigned_license_counts[license_name] < desired:
+                return license_name
+        return "FL"
+
+    def append_person(
+        descriptor: dict[str, str | None],
+        allocation: dict[str, str | None] | None,
+    ) -> None:
+        label = str(descriptor.get("id") or f"R{len(people) + 1}")
+        role = allocation.get("role") if allocation and allocation.get("role") else descriptor.get("role")
+        shift = allocation.get("shift") if allocation and allocation.get("shift") else descriptor.get("shift")
+        if not shift:
+            shift = {"V1": "A7", "V2": "A14", "V3": "A21"}.get(str(role or ""), "A7")
+        source = allocation.get("source") if allocation else descriptor.get("source")
+        source = str(source or "regular")
+        license_name = str(allocation.get("license") if allocation else fallback_license())
+        assigned_license_counts[license_name] += 1
+        sector_hours = worked_hours[label.casefold()]
+        shift_rule = shift_lookup.get(str(shift))
+        capacity = (
+            max_sector_hours_for_shift(
+                shift_rule,
+                settings.max_consecutive_work_hours,
+                settings.rest_after_max_consecutive_hours,
+            )
+            if shift_rule is not None
+            else sector_hours
+        )
+        if role in role_limits:
+            capacity = min(capacity, role_limits[str(role)])
+        capacity = max(sector_hours, capacity)
+        people.append(
+            {
+                "id": label,
+                "license": license_name,
+                "shift": str(shift),
+                "role": role,
+                "sector_hours": sector_hours,
+                "max_sector_hours": capacity,
+                "utilization_percent": round((sector_hours / capacity) * 100) if capacity > 0 else 0,
+                "used_as_sector_controller": sector_hours > 0,
+                "source": source,
+            }
+        )
+
+    for descriptor in descriptors:
+        allowed_licenses = _manual_allowed_licenses(descriptor, worker_sectors)
+        allocation_index = _manual_allocation_index(descriptor, allocations, allowed_licenses)
+        allocation = allocations.pop(allocation_index) if allocation_index is not None else None
+        append_person(descriptor, allocation)
+
+    generated_index = 1
+    existing_ids = {str(person["id"]).casefold() for person in people}
+    for allocation in allocations:
+        role = allocation.get("role")
+        preferred_id = {
+            "V1": "Vi1",
+            "V2": "Vi2",
+            "V3": "Vi3",
+            "FMP": "FMP",
+        }.get(str(role or ""))
+        while True:
+            generated_id = preferred_id or f"R{generated_index}"
+            generated_index += 1
+            if generated_id.casefold() not in existing_ids:
+                break
+            preferred_id = None
+        existing_ids.add(generated_id.casefold())
+        append_person(
+            {
+                "id": generated_id,
+                "shift": allocation.get("shift"),
+                "role": role,
+                "source": allocation.get("source"),
+            },
+            allocation,
+        )
+
+    planned_people = len(people)
+    active_people = sum(1 for person in people if int(person["sector_hours"]) > 0)
+    scheduled_person_hours = sum(int(person["sector_hours"]) for person in people)
+    total_person_capacity_hours = sum(int(person["max_sector_hours"]) for person in people)
+    utilization_percent = (
+        round((scheduled_person_hours / total_person_capacity_hours) * 100)
+        if total_person_capacity_hours > 0
+        else 0
+    )
+    requested_sector_counts = [int(hour["open_sectors"]) for hour in hourly_coverage]
+    max_sector_hours = sum(requested_sector_counts)
+    baseline_min_people, baseline_formula = baseline_min_people_for_profile(requested_sector_counts)
+    people_by_id = {str(person["id"]).casefold(): person for person in people}
+    leader_edge_exception_hours = 0
+    fmp_vi_overlap_hours = 0
+    for slot, hour in enumerate(hourly_coverage):
+        active_slot_people = [
+            people_by_id[key]
+            for key in {worker.casefold() for worker in hour["workers"]}
+            if key in people_by_id
+        ]
+        vi_count = 0
+        fmp_count = 0
+        for person in active_slot_people:
+            role = str(person.get("role") or "")
+            if role in {"V1", "V2", "V3"}:
+                vi_count += 1
+                shift_rule = shift_lookup.get(str(person.get("shift") or ""))
+                shift_slots = _hour_slots_for_shift(shift_rule) if shift_rule is not None else []
+                if shift_slots and (
+                    (role in {"V1", "V2"} and slot in {shift_slots[0], shift_slots[-1]})
+                    or (role == "V3" and slot == shift_slots[0])
+                ):
+                    leader_edge_exception_hours += 1
+            elif role == "FMP":
+                fmp_count += 1
+        fmp_vi_overlap_hours += fmp_count * vi_count
+
+    minimum_required_fl = sum(
+        int(row.get("fl", 0) or 0)
+        for row in detail.get("staff_rows", [])
+        if isinstance(row, dict) and row.get("role")
+    )
+    actual_license_counts = Counter(str(person["license"]) for person in people)
+    expected_license_counts = {
+        license_name: int(desired_license_counts.get(license_name, 0) or 0)
+        for license_name in LICENSES
+    }
+    warnings: list[str] = []
+    if planned_people != int(detail.get("parsed_total") or planned_people):
+        warnings.append(
+            "Število oseb v ročnem urniku se ne ujema s sestavo konfiguracije; "
+            "prikazane so vse osebe, najdene v urniku in sektorskih sedežih."
+        )
+    if any(actual_license_counts[name] != expected_license_counts[name] for name in LICENSES):
+        warnings.append(
+            "Licenc nekaterih oseb ni bilo mogoče enolično povezati z ročnim urnikom; "
+            "uporabljena je najboljša možna razporeditev iz agregirane sestave."
+        )
+    incompatible_people = [
+        str(person["id"])
+        for person in people
+        if str(person["license"])
+        not in _manual_allowed_licenses(
+            {
+                "id": str(person["id"]),
+                "role": str(person.get("role") or "") or None,
+            },
+            worker_sectors,
+        )
+    ]
+    if incompatible_people:
+        warnings.append(
+            "Agregiranih licenc ni mogoče povsem uskladiti z ročnimi sektorskimi sedeži za: "
+            + ", ".join(incompatible_people)
+            + "."
+        )
+
+    source_label = str(detail.get("source_label") or "Ročna konfiguracija")
+    return CalculatorResponse(
+        feasible=True,
+        max_sector_hours=max_sector_hours,
+        requested_sector_hours=max_sector_hours,
+        solver_upper_bound_sector_hours=None,
+        solver_gap_to_upper_bound=None,
+        solver_status="MANUAL_IMPORT",
+        solver_solution_count=0,
+        solver_optimality_gap_percent=None,
+        solver_stop_reason="Ročna konfiguracija ni bila ponovno izračunana.",
+        leader_edge_exception_hours=leader_edge_exception_hours,
+        fmp_vi_overlap_hours=fmp_vi_overlap_hours,
+        crisis_exception_hours=leader_edge_exception_hours + fmp_vi_overlap_hours,
+        missing_sector_hours=0,
+        baseline_min_people=baseline_min_people,
+        baseline_min_people_formula=baseline_formula,
+        minimum_required_fl=minimum_required_fl,
+        planned_people=planned_people,
+        active_people=active_people,
+        unused_people=planned_people - active_people,
+        scheduled_person_hours=scheduled_person_hours,
+        total_person_capacity_hours=total_person_capacity_hours,
+        utilization_percent=utilization_percent,
+        people=people,
+        shift_summary=_manual_shift_summary(people),
+        hourly_coverage=hourly_coverage,
+        pareto_points=[],
+        notes=[
+            f"{source_label} »{detail.get('name', '')}« je odprta kot poln rezultat kalkulatorja.",
+            "Urni sektorji, sedeži in obremenitve so povzeti iz shranjenega ročnega razporeda.",
+            "Solverjeve meje in dokaz optimalnosti niso na voljo, ker konfiguracija ni bila ponovno izračunana.",
+        ],
+        warnings=warnings,
+    )
+
+
 def _hour_label_for_slot(slot: int) -> str:
     start = (DAY_START + slot) % 24
     end = (start + 1) % 24
@@ -1141,7 +1688,7 @@ def manual_configuration_detail(configuration_id: str | int) -> dict[str, object
         model_seconds=seconds_by_column.get(column_index),
         has_manual_schedule=manual_schedule is not None,
     )
-    return {
+    detail = {
         **summary,
         "source_path": str(path),
         "workbook_path": str(workbook_path) if workbook_path else None,
@@ -1150,6 +1697,8 @@ def manual_configuration_detail(configuration_id: str | int) -> dict[str, object
         "staff_rows": staff_rows_for_configuration(configuration),
         "manual_schedule": manual_schedule,
     }
+    detail["calculator_result"] = manual_configuration_calculator_result(detail)
+    return detail
 
 
 def _configuration_has_fmp(detail: dict[str, object]) -> bool:
@@ -1865,6 +2414,7 @@ def _run_calculator_variants(
     variant_result_callback: VariantResultCallback | None = None,
     start_progress: int = 8,
     end_progress: int = 92,
+    overall_time_limit_seconds: int | None = None,
 ) -> tuple[dict[str, object], list[dict[str, object]]]:
     if not variants:
         raise ValueError("Ni pripravljenih variant za izračun.")
@@ -1873,9 +2423,28 @@ def _run_calculator_variants(
     best_variant: dict[str, object] | None = None
     total_variants = len(variants)
     progress_span = max(1, end_progress - start_progress)
+    overall_deadline = (
+        time.perf_counter() + overall_time_limit_seconds
+        if overall_time_limit_seconds is not None
+        else None
+    )
 
     for index, (variant_key, variant_label, request, license_ratio) in enumerate(variants, start=1):
         _check_variant_cancel(cancel_callback)
+        if overall_deadline is not None:
+            remaining_seconds = overall_deadline - time.perf_counter()
+            if remaining_seconds <= 0 and best_variant is not None:
+                break
+            remaining_variants = total_variants - index + 1
+            variant_time_limit = max(1, math.ceil(max(0, remaining_seconds) / remaining_variants))
+            if request.settings.cp_sat_time_limit_seconds > variant_time_limit:
+                request = request.model_copy(
+                    update={
+                        "settings": request.settings.model_copy(
+                            update={"cp_sat_time_limit_seconds": variant_time_limit}
+                        )
+                    }
+                )
         variant_start = start_progress + round(((index - 1) / total_variants) * progress_span)
         variant_end = start_progress + round((index / total_variants) * progress_span)
         if progress_callback is not None:
@@ -1937,7 +2506,7 @@ def complete_configuration(
     if requested_sector_hours <= 0:
         raise ValueError("Dopolnitev potrebuje vsaj eno zahtevano sektorsko uro.")
 
-    time_limit_seconds = max(1, min(120, payload.time_limit_seconds))
+    time_limit_seconds = max(1, min(600, payload.time_limit_seconds))
     target_people = _completion_people_limit(base_request, payload.current_result)
     current_ratio = _request_license_ratio(base_request, payload.current_result)
     default_ratio = {"FL": 50, "APS": 0, "ACS": 50}
@@ -1995,6 +2564,7 @@ def complete_configuration(
         variant_result_callback=variant_result_callback,
         start_progress=8,
         end_progress=94,
+        overall_time_limit_seconds=time_limit_seconds,
     )
 
     selected_calculator = best_variant["calculator"]

@@ -435,7 +435,7 @@ export default function FutureCalculator({
         <div className="future-section-heading">
           <div>
             <p className="eyebrow">15-minutni model</p>
-            <h2>Futuristični kalkulator</h2>
+            <h2>Futuristični KonfMaker*</h2>
           </div>
           <div className="future-model-badge">96 terminov</div>
         </div>

@@ -110,17 +110,19 @@ class PatternRequirement:
 
 
 def can_use_pattern_minimum_core(request: CalculatorRequest) -> bool:
-    """Keep the first version isolated from advanced manual overrides."""
+    """Use exact cover for plain demand calculations, with or without a people cap."""
     return (
         request.calculation_mode == "demand_to_staff"
-        and request.total_people <= 0
         and not request.fixed_staff
         and not request.locked_staff
         and not request.officer_staff
         and not request.office_pool
-        and request.continuation_min_sector_hours is None
         and request.leader_exception_mode == "forbid"
         and request.requested_sector_counts is not None
+        and (
+            request.continuation_min_sector_hours is None
+            or request.continuation_min_sector_hours <= sum(request.requested_sector_counts)
+        )
     )
 
 
@@ -739,20 +741,51 @@ def _solve_pattern_model(
             model.AddAbsEquality(deviation, target_total * selected_by_license[license_name] - target_count * selected_total)
             deviation_terms.append(deviation)
 
-        selected_capacity = sum(pattern.work_hours * counts[index] for index, pattern in enumerate(library.patterns))
+        shift_duration_by_code = {
+            shift.code: shift.duration_hours
+            for shift in [*request.settings.shifts, MANDATORY_V3_SHIFT]
+        }
+        selected_shift_hours = sum(
+            shift_duration_by_code.get(pattern.shift, pattern.work_hours) * counts[index]
+            for index, pattern in enumerate(library.patterns)
+        )
         selected_fl = selected_by_license["FL"]
         role_terms = [
             counts[index]
             for index, pattern in enumerate(library.patterns)
             if pattern.role is not None
         ]
-        model.Minimize(
+        license_quality_penalty = (
             sum(deviation_terms) * 10_000
             + sum(flexible_fl_terms) * (750 if request.prefer_minimal_fl else 80)
-            + sum(fmp_vi_overlap_terms)
             + selected_fl * (250 if request.prefer_minimal_fl else 5)
-            + selected_capacity * 2
+        )
+        operational_quality_penalty = (
+            sum(fmp_vi_overlap_terms)
             + sum(role_terms) * 20
+        )
+        max_deviation = max(1, people_limit * max(1, target_total) * 2)
+        license_quality_penalty_ceiling = (
+            len(ratio_targets) * max_deviation * 10_000
+            + 2 * sum(target_sector_counts) * (750 if request.prefer_minimal_fl else 80)
+            + people_limit * (250 if request.prefer_minimal_fl else 5)
+        )
+        max_shift_duration = max(shift_duration_by_code.values(), default=1)
+        selected_shift_hours_ceiling = max(1, people_limit * max_shift_duration)
+        short_shift_priority = request.settings.short_shift_priority
+        license_mix_priority = request.settings.license_mix_priority
+
+        # Full coverage and the minimum headcount are already hard constraints.
+        # Cross-normalize the two user-controlled quality criteria so their
+        # 0-100 sliders are comparable despite using different raw units.
+        model.Minimize(
+            selected_shift_hours
+            * short_shift_priority
+            * (license_quality_penalty_ceiling + 1)
+            + license_quality_penalty
+            * license_mix_priority
+            * (selected_shift_hours_ceiling + 1)
+            + operational_quality_penalty
         )
 
     solver = cp_model.CpSolver()
@@ -1003,11 +1036,27 @@ def _response_from_pattern_solution(
                 f"Generator je uporabil {library.pattern_count} legalnih vzorcev "
                 f"({ 'cache' if library.cache_status == 'hit' else 'na novo generirano' })."
             ),
-            "FL/APS/ACS vnosi se v minimum načinu berejo kot razmerje licenc, ne kot trde zgornje meje.",
             f"Pred najdeno rešitvijo je bilo dokazano neizvedljivih {len(failed_steps)} manjših limitov ljudi.",
+            (
+                "Prioritete optimizacije: "
+                f"SH {request.settings.coverage_priority}/100, "
+                f"licenčno razmerje {request.settings.license_mix_priority}/100, "
+                f"krajše izmene {request.settings.short_shift_priority}/100. "
+                "Po najdeni polni pokritosti SH ostane trd pogoj."
+            ),
             "CP-SAT pri tem jedru nima časovne omejitve; izračun se konča z dokazom, izvedljivo rešitvijo ali uporabniškim preklicem.",
         ]
     )
+    if request.license_mix_percent is not None:
+        mix = request.license_mix_percent
+        notes.append(
+            "FL/APS/ACS se v tem načinu berejo kot mehko ciljno razmerje "
+            f"(FL {mix.fl} %, APS {mix.aps} %, ACS {mix.acs} %), ne kot trde zgornje meje."
+        )
+    else:
+        notes.append(
+            "FL/APS/ACS vnosi se v minimum načinu berejo kot razmerje licenc, ne kot trde zgornje meje."
+        )
     if proven_minimum:
         notes.append(f"Minimum je dokazan pri {len(people)} ljudeh za {requested_sector_hours}/{requested_sector_hours} sektorskih ur.")
     else:
@@ -1206,7 +1255,7 @@ def calculate_pattern_minimum(
         progress_callback,
         82,
         "quality",
-        "Pri minimalnem limitu optimiziram razmerje licenc in uporabo FL.",
+        "Pri minimalnem limitu najprej krajšam izmene, nato optimiziram razmerje licenc in uporabo FL.",
         people_limit=feasible_people_limit,
     )
     quality_result = _solve_pattern_model(

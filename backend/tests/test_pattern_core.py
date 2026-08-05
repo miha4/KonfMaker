@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from app.calculator import DEFAULT_SHIFTS
+from app.calculator import DEFAULT_SHIFTS, calculate
 from app.main import app
 from app.models import CalculatorRequest, CalculatorSettings
 from app.pattern_core import (
@@ -106,6 +106,86 @@ def test_pattern_core_proves_two_people_for_single_all_sector_hour():
     assert result.total_person_capacity_hours == 2
     assert any("Minimum je dokazan" in note for note in result.notes)
     assert any("exact-cover" in note for note in result.notes)
+
+
+def test_pattern_core_is_available_with_explicit_people_limit():
+    requested = [0] * 24
+    requested[2] = 1
+    request = make_pattern_request(requested, fl_ratio=80, aps_ratio=0, acs_ratio=0).model_copy(
+        update={"total_people": 2}
+    )
+
+    assert can_use_pattern_minimum_core(request)
+    result = calculate_pattern_minimum(request)
+
+    assert result.feasible is True
+    assert result.planned_people == 2
+    assert result.max_sector_hours == 1
+
+
+def test_pattern_core_is_available_for_plus_one_continuation_floor():
+    requested = [0] * 24
+    requested[2] = 1
+    request = make_pattern_request(requested, fl_ratio=80, aps_ratio=0, acs_ratio=0).model_copy(
+        update={"total_people": 3, "continuation_min_sector_hours": 1}
+    )
+
+    assert can_use_pattern_minimum_core(request)
+
+
+def test_pattern_quality_prefers_a_7_hour_shift_when_coverage_and_headcount_are_equal():
+    requested = [0] * 24
+    requested[2] = 1  # 09:00-10:00 can be covered from A7 or several 8-hour shifts.
+    request = make_pattern_request(requested, fl_ratio=80, aps_ratio=0, acs_ratio=0)
+
+    result = calculate_pattern_minimum(request)
+
+    assert result.feasible is True
+    assert result.planned_people == 2
+    assert {row.shift for row in result.shift_summary} == {"A7"}
+
+
+def test_capped_demand_dispatches_to_exact_cover_for_71_hour_profile():
+    request = make_pattern_request(
+        [3, 3] + [4] * 11 + [3] * 4 + [2] + [1] * 5 + [2],
+        fl_ratio=50,
+        aps_ratio=0,
+        acs_ratio=50,
+    )
+    request = request.model_copy(
+        update={
+            "total_people": 28,
+            "settings": request.settings.model_copy(
+                update={
+                    "include_required_shift_leaders": True,
+                    "include_night_fl_requirement": True,
+                    "required_night_fl_count": 4,
+                    "v1_sector_limit": 2,
+                    "v2_sector_limit": 0,
+                    "v3_sector_limit": 4,
+                }
+            ),
+        }
+    )
+
+    result = calculate(request)
+    role_hours = {person.role: person.sector_hours for person in result.people if person.role}
+
+    assert result.feasible is True
+    assert result.planned_people == 28
+    assert result.max_sector_hours == 71
+    assert result.missing_sector_hours == 0
+    assert role_hours["V1"] <= 2
+    assert role_hours["V2"] == 0
+    assert role_hours["V3"] <= 4
+    duration_by_shift = {shift.code: shift.duration_hours for shift in request.settings.shifts}
+    duration_by_shift["A21"] = 10
+    total_shift_hours = sum(
+        row.total * duration_by_shift[row.shift.rsplit("/", 1)[-1]]
+        for row in result.shift_summary
+    )
+    assert total_shift_hours < 230
+    assert any("krajše izmene 100/100" in note for note in result.notes)
 
 
 def test_pattern_core_uses_acs_for_upper_sector_when_ratio_allows_it():

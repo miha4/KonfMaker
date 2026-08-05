@@ -4,6 +4,7 @@ import {
   cancelCalculationJob,
   compareResultToConfigurations,
   deleteManualConfiguration,
+  exportCalculatorWorkbook,
   getCalculationJob,
   getCalculationJobs,
   getCalculationJobResult,
@@ -19,6 +20,7 @@ import {
   startCompleteConfigurationJob,
   startManualConfigurationOneDownJob,
   startParetoJob,
+  updateUserConfiguration,
 } from './api/calculator';
 import ModelAnalysis from './ModelAnalysis';
 import FutureCalculator from './FutureCalculator';
@@ -29,12 +31,20 @@ import {
   type CalculationCancelAction,
 } from './calculationUi';
 import {
+  applyCurrentFmpSelection,
   continuationDelta,
   coverageIsProven,
+  enablesOnlyAdditionalRegularShifts,
+  FULL_WHAT_IF_TIME_LIMIT_SECONDS,
+  fullWhatIfSolverSettings,
+  increasedLeaderSectorLimits,
+  nextPeopleLimit,
   resultUsesOffice,
+  selectedShiftWhatIfChanges,
   stoppedOnTimeLimit,
   suggestedEmergencyShift,
   suggestedOfficeLicense,
+  type ShiftWhatIfChange,
 } from './continuationUi';
 import { preventNumberInputArrowStep } from './numberInput';
 import type {
@@ -82,6 +92,7 @@ const DEFAULT_FOCUS_CONFIGURATION_NAMES = [
 ];
 
 const FOCUS_STORAGE_KEY = 'konfmaker.focusConfigurationNames';
+const COMPLETE_CONFIGURATION_TIME_LIMIT_SECONDS = 180;
 
 const fallbackSettings: CalculatorSettings = {
   max_sectors_per_hour: 5,
@@ -91,6 +102,9 @@ const fallbackSettings: CalculatorSettings = {
   cp_sat_no_improvement_seconds: 180,
   cp_sat_acceptable_sector_gap: 0,
   cp_sat_min_auto_stop_coverage_percent: 95,
+  coverage_priority: 100,
+  license_mix_priority: 25,
+  short_shift_priority: 100,
   include_required_shift_leaders: true,
   include_night_fl_requirement: true,
   required_night_fl_count: 4,
@@ -126,9 +140,19 @@ const fallbackSettings: CalculatorSettings = {
 
 const savedSettingsStorageKey = 'konfmaker.calculatorSettings.v1';
 const savedCalculatorInputsStorageKey = 'konfmaker.calculatorInputs.v1';
+const onboardingCompletedStorageKey = 'konfmaker.onboardingCompleted.v1';
 
 type Tab = 'calculator' | 'future' | 'airport' | 'settings' | 'manual-configs' | 'comparison' | 'analysis' | 'theory';
 type CalculationMode = 'staff_to_coverage' | 'demand_to_staff';
+type GuidedTourKind = 'new-configuration' | 'manual-configuration';
+type GuidedTourStep = {
+  tab: Tab;
+  target: string;
+  title: string;
+  description: string;
+  advanceOnTargetClick?: boolean;
+  finishOnTargetClick?: boolean;
+};
 type PollingTimer = ReturnType<typeof window.setInterval>;
 type SectorDemandInterval = {
   id: number;
@@ -169,6 +193,7 @@ type SavedCalculatorInputs = Partial<{
   usePeopleLimit: boolean;
   minimumLicenseRatio: { fl: number; aps: number; acs: number };
   sectorDemand: number[];
+  staffSectorLimits: Array<number | null>;
   baseSectors: number;
   sectorIntervals: SectorDemandInterval[];
   fixedStaff: FixedStaffRow[];
@@ -422,7 +447,50 @@ function buildHourLabels(): string[] {
 }
 
 function createDefaultSectorDemand(maxSectors: number): number[] {
-  return Array.from({ length: HOURS_IN_DAY }, () => maxSectors);
+  const daytimeSectors = Math.min(3, Math.max(0, maxSectors));
+  const nightSectors = Math.min(1, daytimeSectors);
+
+  return Array.from({ length: HOURS_IN_DAY }, (_, index) => {
+    const startHour = (DAY_START + index) % HOURS_IN_DAY;
+    return startHour >= 1 && startHour < 5 ? nightSectors : daytimeSectors;
+  });
+}
+
+function createMaximumSectorDemand(maxSectors: number): number[] {
+  return Array.from({ length: HOURS_IN_DAY }, () => Math.max(0, maxSectors));
+}
+
+function createUnlimitedSectorLimits(): Array<number | null> {
+  return Array.from({ length: HOURS_IN_DAY }, () => null);
+}
+
+function normalizeStaffSectorLimits(rawLimits: unknown, maxSectors: number): Array<number | null> {
+  if (!Array.isArray(rawLimits)) {
+    return createUnlimitedSectorLimits();
+  }
+  return Array.from({ length: HOURS_IN_DAY }, (_, index) => {
+    const rawLimit = rawLimits[index];
+    if (rawLimit === null || rawLimit === undefined) {
+      return null;
+    }
+    const limit = clamp(Math.round(finiteNumber(rawLimit, maxSectors)), 0, maxSectors);
+    return limit >= maxSectors ? null : limit;
+  });
+}
+
+function resolveStaffSectorLimits(limits: Array<number | null>, maxSectors: number): number[] {
+  return Array.from({ length: HOURS_IN_DAY }, (_, index) => {
+    const limit = limits[index];
+    return limit === null || limit === undefined
+      ? maxSectors
+      : clamp(limit, 0, maxSectors);
+  });
+}
+
+function formatCompactHourLabel(hourIndex: number): string {
+  const startHour = (DAY_START + hourIndex) % HOURS_IN_DAY;
+  const endHour = (startHour + 1) % HOURS_IN_DAY;
+  return `${startHour}-${endHour}`;
 }
 
 function createDefaultDemandIntervals(): SectorDemandInterval[] {
@@ -486,19 +554,6 @@ function hourToSlot(hour: number): number {
   return (hour - DAY_START + HOURS_IN_DAY) % HOURS_IN_DAY;
 }
 
-function formatSectorCountLabel(count: number): string {
-  if (count === 1) {
-    return '1 sektor';
-  }
-  if (count === 2) {
-    return '2 sektorja';
-  }
-  if (count === 3 || count === 4) {
-    return `${count} sektorji`;
-  }
-  return `${count} sektorjev`;
-}
-
 function formatLicenseRatioShare(count: number, total: number): string {
   if (total <= 0) {
     return '0 % razmerja';
@@ -532,76 +587,6 @@ function buildSectorDemandFromIntervals(
   });
 
   return demand;
-}
-
-function cleanCsvCell(value: string): string {
-  return value.trim().replace(/^\uFEFF/, '').replace(/^"|"$/g, '').trim();
-}
-
-function parseHourRange(value: string): [number, number] | null {
-  const match = cleanCsvCell(value)
-    .replace(/[–—−]/g, '-')
-    .replace(/\s+/g, '')
-    .match(/^(\d{1,2})(?::\d{2})?-(\d{1,2})(?::\d{2})?$/);
-
-  if (!match) {
-    return null;
-  }
-
-  const startHour = Number(match[1]);
-  const rawEndHour = Number(match[2]);
-  if (!Number.isInteger(startHour) || !Number.isInteger(rawEndHour) || startHour < 0 || startHour > 23) {
-    return null;
-  }
-  if (rawEndHour < 0 || rawEndHour > 24) {
-    return null;
-  }
-
-  return [startHour, rawEndHour === 24 ? 0 : rawEndHour];
-}
-
-function applyHourRangeToDemand(demand: number[], startHour: number, endHour: number, sectorCount: number) {
-  if (startHour === endHour) {
-    return;
-  }
-
-  let hour = startHour;
-  for (let guard = 0; guard < HOURS_IN_DAY && hour !== endHour; guard += 1) {
-    demand[hourToSlot(hour)] = sectorCount;
-    hour = (hour + 1) % HOURS_IN_DAY;
-  }
-}
-
-function parseSectorDemandCsv(
-  text: string,
-  maxSectors: number,
-  currentDemand: number[],
-): { demand: number[]; importedRows: number; skippedRows: number } {
-  const demand = clampSectorDemand(currentDemand, maxSectors);
-  let importedRows = 0;
-  let skippedRows = 0;
-
-  text.split(/\r?\n/).forEach((rawLine) => {
-    const line = rawLine.trim();
-    if (!line || line.toLowerCase().startsWith('sep=')) {
-      return;
-    }
-
-    const delimiter = line.includes(';') ? ';' : line.includes('\t') ? '\t' : ',';
-    const [rawRange, rawSectorCount] = line.split(delimiter).map(cleanCsvCell);
-    const range = parseHourRange(rawRange ?? '');
-    const sectorCount = Number(rawSectorCount);
-
-    if (!range || !Number.isFinite(sectorCount)) {
-      skippedRows += 1;
-      return;
-    }
-
-    applyHourRangeToDemand(demand, range[0], range[1], clamp(Math.round(sectorCount), 0, maxSectors));
-    importedRows += 1;
-  });
-
-  return { demand, importedRows, skippedRows };
 }
 
 function bestBaseSectorCount(demand: number[], currentBaseSectors: number, maxSectors: number): number {
@@ -731,6 +716,9 @@ function formatBestResultSummary(status: CalculationJobStatus): string | null {
 }
 
 function defaultUserConfigurationName(result: CalculatorResponse): string {
+  if (result.missing_sector_hours > 0) {
+    return `User ${result.planned_people}p ${result.max_sector_hours}/${result.requested_sector_hours}SH - nepopolna`;
+  }
   return `User ${result.planned_people}p ${result.max_sector_hours}SH`;
 }
 
@@ -915,6 +903,9 @@ function clonePayloadForRegularContinuation(
     settings: {
       ...payload.settings,
       cp_sat_time_limit_seconds: Math.min(3600, extraSeconds),
+      // A visible "5 min" continuation must not stop after the shorter
+      // no-improvement limit inherited from the original calculation.
+      cp_sat_no_improvement_seconds: 0,
     },
   };
 }
@@ -943,19 +934,63 @@ function clonePayloadForEmergencyShift(
   warmStartResult?: CalculatorResponse | null,
   warmStartSnapshotId?: string | null,
 ): CalculatorRequest {
+  const continuation = clonePayloadForRegularContinuation(
+    payload,
+    Math.min(300, payload.settings.cp_sat_time_limit_seconds),
+    warmStartResult,
+    warmStartSnapshotId,
+  );
   return {
-    ...clonePayloadForRegularContinuation(
-      payload,
-      Math.min(300, payload.settings.cp_sat_time_limit_seconds),
-      warmStartResult,
-      warmStartSnapshotId,
-    ),
+    ...continuation,
     settings: {
-      ...payload.settings,
-      cp_sat_time_limit_seconds: Math.min(300, payload.settings.cp_sat_time_limit_seconds),
+      ...continuation.settings,
       shifts: payload.settings.shifts.map((shift) => (
         shift.code === shiftCode ? { ...shift, enabled: true } : shift
       )),
+    },
+  };
+}
+
+function clonePayloadForExtraPerson(
+  payload: CalculatorRequest,
+  warmStartResult: CalculatorResponse,
+  warmStartSnapshotId?: string | null,
+): CalculatorRequest | null {
+  const totalPeople = nextPeopleLimit(payload, warmStartResult);
+  if (totalPeople === null) {
+    return null;
+  }
+  return {
+    ...clonePayloadForRegularContinuation(
+      payload,
+      FULL_WHAT_IF_TIME_LIMIT_SECONDS,
+      warmStartResult,
+      warmStartSnapshotId,
+    ),
+    total_people: totalPeople,
+    settings: fullWhatIfSolverSettings(payload.settings),
+  };
+}
+
+function clonePayloadForLeaderSectorHours(
+  payload: CalculatorRequest,
+  v1SectorLimit: number,
+  v2SectorLimit: number,
+  warmStartResult?: CalculatorResponse | null,
+  warmStartSnapshotId?: string | null,
+): CalculatorRequest {
+  const continuation = clonePayloadForRegularContinuation(
+    payload,
+    FULL_WHAT_IF_TIME_LIMIT_SECONDS,
+    warmStartResult,
+    warmStartSnapshotId,
+  );
+  return {
+    ...continuation,
+    settings: {
+      ...fullWhatIfSolverSettings(continuation.settings),
+      v1_sector_limit: clamp(v1SectorLimit, payload.settings.v1_sector_limit, 24),
+      v2_sector_limit: clamp(v2SectorLimit, payload.settings.v2_sector_limit, 24),
     },
   };
 }
@@ -1018,58 +1053,54 @@ function clonePayloadForLockedRoster(payload: CalculatorRequest, result: Calcula
 
 function clonePayloadForOfficeFallback(
   payload: CalculatorRequest,
+  includeFmp: boolean,
   officeSelection?: OfficeFallbackSelection,
   warmStartResult?: CalculatorResponse | null,
   warmStartSnapshotId?: string | null,
 ): CalculatorRequest {
+  const currentPayload = applyCurrentFmpSelection(payload, includeFmp);
   const fallbackSelection: OfficeFallbackSelection = officeSelection ?? {
     mode: 'auto',
-    pool: officePoolFromPayload(payload),
+    pool: officePoolFromPayload(currentPayload),
   };
 
   if (fallbackSelection.mode === 'fixed' && fallbackSelection.shift) {
     const fixedOfficeRules = officerStaffRulesFromPool(fallbackSelection.pool, fallbackSelection.shift);
     return {
-      ...payload,
-      fixed_staff: payload.fixed_staff,
-      locked_staff: payload.locked_staff,
-      officer_staff: mergeOfficerStaffRules([...payload.officer_staff, ...fixedOfficeRules]),
+      ...currentPayload,
+      fixed_staff: currentPayload.fixed_staff,
+      locked_staff: currentPayload.locked_staff,
+      officer_staff: mergeOfficerStaffRules([...currentPayload.officer_staff, ...fixedOfficeRules]),
       office_pool: [],
       office_fallback_mode: 'disabled',
       continuation_min_sector_hours: Math.max(
-        payload.continuation_min_sector_hours ?? 0,
+        currentPayload.continuation_min_sector_hours ?? 0,
         warmStartResult?.max_sector_hours ?? 0,
       ),
-      solver_random_seed: Math.min(2_147_483_647, (payload.solver_random_seed ?? 1) + 1),
+      warm_start_roster_priority: 100,
+      solver_random_seed: Math.min(2_147_483_647, (currentPayload.solver_random_seed ?? 1) + 1),
       ...warmStartContinuationFields(warmStartResult, warmStartSnapshotId),
-      settings: {
-        ...payload.settings,
-        cp_sat_time_limit_seconds: Math.min(300, payload.settings.cp_sat_time_limit_seconds),
-        cp_sat_no_improvement_seconds: Math.min(payload.settings.cp_sat_no_improvement_seconds || 60, 60),
-      },
+      settings: fullWhatIfSolverSettings(currentPayload.settings),
     };
   }
 
   const overrideRules = officePoolTotal(fallbackSelection.pool) > 0
     ? officePoolRulesFromPool(fallbackSelection.pool)
-    : payload.office_pool;
+    : currentPayload.office_pool;
   return {
-    ...payload,
-    fixed_staff: payload.fixed_staff,
-    locked_staff: payload.locked_staff,
+    ...currentPayload,
+    fixed_staff: currentPayload.fixed_staff,
+    locked_staff: currentPayload.locked_staff,
     office_pool: overrideRules,
     office_fallback_mode: 'force',
     continuation_min_sector_hours: Math.max(
-      payload.continuation_min_sector_hours ?? 0,
+      currentPayload.continuation_min_sector_hours ?? 0,
       warmStartResult?.max_sector_hours ?? 0,
     ),
-    solver_random_seed: Math.min(2_147_483_647, (payload.solver_random_seed ?? 1) + 1),
+    warm_start_roster_priority: 100,
+    solver_random_seed: Math.min(2_147_483_647, (currentPayload.solver_random_seed ?? 1) + 1),
     ...warmStartContinuationFields(warmStartResult, warmStartSnapshotId),
-    settings: {
-      ...payload.settings,
-      cp_sat_time_limit_seconds: Math.min(300, payload.settings.cp_sat_time_limit_seconds),
-      cp_sat_no_improvement_seconds: Math.min(payload.settings.cp_sat_no_improvement_seconds || 60, 60),
-    },
+    settings: fullWhatIfSolverSettings(currentPayload.settings),
   };
 }
 
@@ -1193,6 +1224,7 @@ function ProgressPhase({ status }: { status: CalculationJobStatus }) {
 }
 
 function SaveConfigurationDialog({
+  result,
   name,
   duplicateWarning,
   isSaving,
@@ -1200,6 +1232,7 @@ function SaveConfigurationDialog({
   onCancel,
   onConfirm,
 }: {
+  result: CalculatorResponse;
   name: string;
   duplicateWarning: string | null;
   isSaving: boolean;
@@ -1220,6 +1253,12 @@ function SaveConfigurationDialog({
           <p className="eyebrow">Shranjevanje</p>
           <h2>Shrani uporabniško konfiguracijo</h2>
         </div>
+        {result.missing_sector_hours > 0 ? (
+          <div className="warning-box">
+            Shranjuješ nepopolno konfiguracijo: doseženih je {result.max_sector_hours}/{result.requested_sector_hours} SH,
+            manjka {result.missing_sector_hours} SH. Ob ponovnem odprtju bodo cilj in manjkajoče ure ostali vidni.
+          </div>
+        ) : null}
         {duplicateWarning ? <div className="warning-box">{duplicateWarning}</div> : null}
         <label className="field">
           <span>Ime konfiguracije</span>
@@ -1246,6 +1285,8 @@ function SaveConfigurationDialog({
 function TimeLimitDecisionPanel({
   decision,
   onContinue,
+  onTryExtraPerson,
+  onTryLeaderSectorHours,
   onTryLeaderCrisis,
   onTryOfficeFallback,
   onTryEmergencyShift,
@@ -1254,6 +1295,8 @@ function TimeLimitDecisionPanel({
 }: {
   decision: TimeLimitDecision;
   onContinue: () => void;
+  onTryExtraPerson: () => void;
+  onTryLeaderSectorHours: (v1SectorLimit: number, v2SectorLimit: number) => void;
   onTryLeaderCrisis: (maxExceptionHours: number) => void;
   onTryOfficeFallback: (selection: OfficeFallbackSelection) => void;
   onTryEmergencyShift: (shiftCode: string) => void;
@@ -1280,6 +1323,14 @@ function TimeLimitDecisionPanel({
   const [officeFallbackMode, setOfficeFallbackMode] = useState<OfficeFallbackMode>('auto');
   const [draftOfficeShift, setDraftOfficeShift] = useState(defaultOfficeShift);
   const [maxLeaderExceptionHours, setMaxLeaderExceptionHours] = useState(1);
+  const initialLeaderLimits = calculationPayload
+    ? increasedLeaderSectorLimits(
+        calculationPayload.settings.v1_sector_limit,
+        calculationPayload.settings.v2_sector_limit,
+      )
+    : { v1SectorLimit: 1, v2SectorLimit: 1 };
+  const [draftV1SectorLimit, setDraftV1SectorLimit] = useState(initialLeaderLimits.v1SectorLimit);
+  const [draftV2SectorLimit, setDraftV2SectorLimit] = useState(initialLeaderLimits.v2SectorLimit);
   const [draftOfficePool, setDraftOfficePool] = useState<OfficePool>(
     officePoolTotal(initialOfficePool) > 0
       ? initialOfficePool
@@ -1302,6 +1353,13 @@ function TimeLimitDecisionPanel({
     && hasOfficeFallbackSelection(officeSelection);
   const canTryLeaderCrisis = decision.restartPlan.kind !== 'one-down'
     && (currentResult?.missing_sector_hours ?? 0) > 0;
+  const canIncreaseV1SectorHours = calculationPayload !== null
+    && draftV1SectorLimit > calculationPayload.settings.v1_sector_limit;
+  const canIncreaseV2SectorHours = calculationPayload !== null
+    && draftV2SectorLimit > calculationPayload.settings.v2_sector_limit;
+  const extraPeopleLimit = calculationPayload && currentResult
+    ? nextPeopleLimit(calculationPayload, currentResult)
+    : null;
   const canContinueSameRules = !coverageIsProven(decision.status);
   const updateDraftOfficePool = (key: keyof OfficePool, value: number) => {
     setDraftOfficePool((current) => ({ ...current, [key]: clamp(value, 0, 20) }));
@@ -1326,7 +1384,7 @@ function TimeLimitDecisionPanel({
         <p>
           {coverageIsProven(decision.status)
             ? 'Z enakimi pravili dodatno računanje ne more povečati SH. Izberi najmanjši operativni poseg ali obdrži rezultat.'
-            : 'Trenutna rešitev ostane shranjena. Nadaljuješ lahko isto iskanje ali preizkusiš en nadzorovan operativni poseg.'}
+            : 'Najboljša rešitev ostane shranjena. Zaženeš lahko novo iskalno pot z enakimi pravili ali preizkusiš en nadzorovan operativni poseg.'}
         </p>
       </div>
       <div className="continuation-metrics" aria-label="Povzetek najboljše rešitve">
@@ -1339,11 +1397,101 @@ function TimeLimitDecisionPanel({
         <div className="continuation-options">
           <div className="continuation-option">
             <div>
-              <strong>Nadaljuj isti model</strong>
-              <span>{canContinueSameRules ? 'Še 5 minut iz trenutne rešitve z novo iskalno potjo.' : 'Maksimalni SH je pri teh pravilih že dokazan.'}</span>
+              <strong>Nadaljuj iskanje 5 minut</strong>
+              <span>
+                {canContinueSameRules
+                  ? 'Ohrani najboljšo rešitev in doseženo SH mejo, nato polnih 5 minut išče po novi poti. Notranjega iskalnega drevesa prejšnjega teka CP-SAT ne more obnoviti.'
+                  : 'Maksimalni SH je pri teh pravilih že dokazan.'}
+              </span>
             </div>
             <button className="secondary-button compact-button" disabled={isBusy || !canContinueSameRules} onClick={onContinue} type="button">
               Nadaljuj še 5 min
+            </button>
+          </div>
+          <div className="continuation-option">
+            <div>
+              <strong>Dodaj +1 osebo</strong>
+              <span>
+                {extraPeopleLimit === null
+                  ? 'Ta možnost je na voljo v načinu Odprtost sektorjev do največ 80 ljudi.'
+                  : `Povečaj limit na ${extraPeopleLimit} ljudi; solver sam izbere licenco in izmeno ter ohrani trenutno rešitev kot warm-start.`}
+              </span>
+            </div>
+            <button
+              className="secondary-button compact-button"
+              disabled={isBusy || extraPeopleLimit === null}
+              onClick={onTryExtraPerson}
+              type="button"
+            >
+              Dodaj +1 osebo
+            </button>
+          </div>
+          <div className="continuation-option">
+            <div>
+              <strong>Razširi sektorske ure VI1</strong>
+              <span>
+                Povečaj samo omejitev VI1; VI2 in druga pravila ostanejo nespremenjena.
+              </span>
+            </div>
+            <label className="crisis-hour-limit">
+              VI1 največ ur
+              <input
+                min={calculationPayload?.settings.v1_sector_limit ?? 0}
+                max="24"
+                type="number"
+                value={draftV1SectorLimit}
+                onKeyDown={preventNumberInputArrowStep}
+                onChange={(event) => setDraftV1SectorLimit(clamp(
+                  Number(event.target.value),
+                  calculationPayload?.settings.v1_sector_limit ?? 0,
+                  24,
+                ))}
+              />
+            </label>
+            <button
+              className="secondary-button compact-button"
+              disabled={isBusy || !canIncreaseV1SectorHours}
+              onClick={() => onTryLeaderSectorHours(
+                draftV1SectorLimit,
+                calculationPayload?.settings.v2_sector_limit ?? draftV2SectorLimit,
+              )}
+              type="button"
+            >
+              Povečaj VI1 in računaj
+            </button>
+          </div>
+          <div className="continuation-option">
+            <div>
+              <strong>Razširi sektorske ure VI2</strong>
+              <span>
+                Povečaj samo omejitev VI2; VI1 in druga pravila ostanejo nespremenjena.
+              </span>
+            </div>
+            <label className="crisis-hour-limit">
+              VI2 največ ur
+              <input
+                min={calculationPayload?.settings.v2_sector_limit ?? 0}
+                max="24"
+                type="number"
+                value={draftV2SectorLimit}
+                onKeyDown={preventNumberInputArrowStep}
+                onChange={(event) => setDraftV2SectorLimit(clamp(
+                  Number(event.target.value),
+                  calculationPayload?.settings.v2_sector_limit ?? 0,
+                  24,
+                ))}
+              />
+            </label>
+            <button
+              className="secondary-button compact-button"
+              disabled={isBusy || !canIncreaseV2SectorHours}
+              onClick={() => onTryLeaderSectorHours(
+                calculationPayload?.settings.v1_sector_limit ?? draftV1SectorLimit,
+                draftV2SectorLimit,
+              )}
+              type="button"
+            >
+              Povečaj VI2 in računaj
             </button>
           </div>
           <div className="continuation-option">
@@ -1940,6 +2088,7 @@ type PairConfigMetrics = {
   id: string;
   name: string;
   source: string;
+  calculatorResult: CalculatorResponse | null;
   sectorHours: number;
   people: number;
   requiredFl: number;
@@ -2064,6 +2213,7 @@ function metricsFromManualConfiguration(detail: ManualConfigurationDetail): Pair
     id: detail.id,
     name: detail.name,
     source: formatComparisonSource(detail.source_type ?? 'excel', detail.source_label),
+    calculatorResult: detail.calculator_result,
     sectorHours: manualConfigSectorHours(detail),
     people,
     requiredFl: manualConfigRequiredFl(detail),
@@ -2136,6 +2286,7 @@ function metricsFromCalculatorResult(result: CalculatorResponse): PairConfigMetr
     id: 'current-calculator-result',
     name: `Trenutni izračun (${result.planned_people} ljudi, ${result.max_sector_hours} SH)`,
     source: 'Kalkulator · ni shranjeno',
+    calculatorResult: result,
     sectorHours: result.max_sector_hours,
     people: result.planned_people,
     requiredFl: result.minimum_required_fl,
@@ -2381,6 +2532,59 @@ function ManualConfigurationSheet({
   );
 }
 
+function UserConfigurationNoteEditor({
+  configuration,
+  isUpdating,
+  onUpdate,
+}: {
+  configuration: ManualConfigurationDetail;
+  isUpdating: boolean;
+  onUpdate: (
+    configuration: ManualConfigurationDetail,
+    updates: { name: string; note: string | null },
+  ) => Promise<boolean>;
+}) {
+  const [noteDraft, setNoteDraft] = useState(configuration.note ?? '');
+  const normalizedNote = noteDraft.trim() || null;
+  const savedNote = configuration.note?.trim() || null;
+  const hasChanges = normalizedNote !== savedNote;
+  const isSaved = savedNote !== null && !hasChanges;
+
+  return (
+    <div className={isSaved ? 'manual-note-editor saved' : 'manual-note-editor'}>
+      <label htmlFor={`manual-note-${configuration.id}`}>
+        <strong>Opomba</strong>
+        <span>Dodaj pojasnilo, namen ali posebnosti te konfiguracije.</span>
+      </label>
+      <textarea
+        id={`manual-note-${configuration.id}`}
+        disabled={isUpdating}
+        maxLength={2000}
+        onChange={(event) => setNoteDraft(event.target.value)}
+        placeholder="Vpiši opombo ..."
+        rows={3}
+        value={noteDraft}
+      />
+      <div className="manual-note-actions">
+        <small>{isSaved ? 'Shranjeno' : `${noteDraft.length}/2000`}</small>
+        <button
+          className="secondary-button compact-button"
+          disabled={isUpdating || !hasChanges}
+          onClick={() => {
+            void onUpdate(configuration, {
+              name: configuration.name,
+              note: normalizedNote,
+            });
+          }}
+          type="button"
+        >
+          {isUpdating ? 'Shranjujem ...' : 'Shrani opombo'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ManualConfigurationsPanel({
   library,
   detail,
@@ -2390,14 +2594,19 @@ function ManualConfigurationsPanel({
   error,
   isLoading,
   oneDownConfigId,
+  exportingExcelConfigId,
+  excelExportError,
   deletingConfigId,
+  updatingConfigId,
   selectedId,
   onLoadLibrary,
   onSelect,
   onOpenInCalculator,
   onTransferDemandInput,
   onRunOneDown,
+  onExportExcel,
   onDeleteUserConfiguration,
+  onUpdateUserConfiguration,
 }: {
   library: ManualConfigurationLibrary | null;
   detail: ManualConfigurationDetail | null;
@@ -2407,14 +2616,22 @@ function ManualConfigurationsPanel({
   error: string | null;
   isLoading: boolean;
   oneDownConfigId: string | null;
+  exportingExcelConfigId: string | null;
+  excelExportError: string | null;
   deletingConfigId: string | null;
+  updatingConfigId: string | null;
   selectedId: string | null;
   onLoadLibrary: () => Promise<void>;
   onSelect: (id: string) => Promise<void>;
   onOpenInCalculator: (configuration: ManualConfigurationDetail) => void;
   onTransferDemandInput: (configuration: ManualConfigurationDetail) => void;
   onRunOneDown: (configuration: ManualConfigurationDetail) => Promise<void>;
+  onExportExcel: (configuration: ManualConfigurationDetail) => Promise<void>;
   onDeleteUserConfiguration: (configuration: ManualConfigurationSummary | ManualConfigurationDetail) => Promise<void>;
+  onUpdateUserConfiguration: (
+    configuration: ManualConfigurationSummary | ManualConfigurationDetail,
+    updates: { name: string; note: string | null },
+  ) => Promise<boolean>;
 }) {
   const [search, setSearch] = useState('');
   const [audit, setAudit] = useState<ManualConfigurationAudit | null>(null);
@@ -2438,6 +2655,8 @@ function ManualConfigurationsPanel({
   const [calibration, setCalibration] = useState<ManualFocusCalibration | null>(null);
   const [isCalibrationLoading, setIsCalibrationLoading] = useState(false);
   const [calibrationError, setCalibrationError] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState<{ id: string; location: 'list' | 'detail' } | null>(null);
+  const [nameDraft, setNameDraft] = useState('');
   const demandSectorHours = currentDemand.reduce((sum, value) => sum + value, 0);
   const [targetSectorHoursInput, setTargetSectorHoursInput] = useState(() => String(demandSectorHours));
   const [targetSectorHoursTouched, setTargetSectorHoursTouched] = useState(false);
@@ -2449,6 +2668,36 @@ function ManualConfigurationsPanel({
     ? demandSectorHours
     : Math.max(0, Math.round(parsedTargetSectorHours));
   const scheduleResult = detail && detail.id === manualResultConfigId ? currentResult : null;
+
+  const beginNameEdit = (
+    configuration: ManualConfigurationSummary | ManualConfigurationDetail,
+    location: 'list' | 'detail',
+  ) => {
+    if (configuration.source_type !== 'user' || updatingConfigId === configuration.id) {
+      return;
+    }
+    setNameDraft(configuration.name);
+    setEditingName({ id: configuration.id, location });
+  };
+
+  const commitNameEdit = async (
+    configuration: ManualConfigurationSummary | ManualConfigurationDetail,
+  ) => {
+    const cleanedName = nameDraft.trim();
+    if (!cleanedName || cleanedName === configuration.name) {
+      setNameDraft(configuration.name);
+      setEditingName(null);
+      return;
+    }
+    const updated = await onUpdateUserConfiguration(configuration, {
+      name: cleanedName,
+      note: configuration.note ?? null,
+    });
+    if (updated) {
+      setFocusNames((current) => current.map((name) => (name === configuration.name ? cleanedName : name)));
+      setEditingName(null);
+    }
+  };
 
   useEffect(() => {
     if (!library && !isLoading) {
@@ -2886,7 +3135,7 @@ function ManualConfigurationsPanel({
       </section>
 
       <section className="panel manual-config-layout">
-        <div className="manual-config-list">
+        <div className="manual-config-list" data-tour="manual-config-list">
           <div className="manual-config-toolbar">
             <label className="field">
               <span>Iskanje</span>
@@ -2955,7 +3204,51 @@ function ManualConfigurationsPanel({
                       key={item.id}
                       onClick={() => void onSelect(item.id)}
                     >
-                      <td className="strong">{item.name}</td>
+                      <td
+                        className={item.source_type === 'user' ? 'strong editable-config-name' : 'strong'}
+                        onDoubleClick={(event) => {
+                          if (item.source_type !== 'user') {
+                            return;
+                          }
+                          event.stopPropagation();
+                          beginNameEdit(item, 'list');
+                        }}
+                        title={item.source_type === 'user' ? 'Dvoklikni za preimenovanje' : undefined}
+                      >
+                        {editingName?.id === item.id && editingName.location === 'list' ? (
+                          <input
+                            aria-label={`Novo ime konfiguracije ${item.name}`}
+                            autoFocus
+                            className="manual-name-input"
+                            disabled={updatingConfigId === item.id}
+                            maxLength={120}
+                            onBlur={() => void commitNameEdit(item)}
+                            onChange={(event) => setNameDraft(event.target.value)}
+                            onClick={(event) => event.stopPropagation()}
+                            onDoubleClick={(event) => event.stopPropagation()}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                event.preventDefault();
+                                event.currentTarget.blur();
+                              } else if (event.key === 'Escape') {
+                                event.preventDefault();
+                                setNameDraft(item.name);
+                                setEditingName(null);
+                              }
+                            }}
+                            value={nameDraft}
+                          />
+                        ) : (
+                          <>
+                            <span>{item.name}</span>
+                            {item.source_type === 'user' && item.is_complete === false ? (
+                              <small className="manual-incomplete-label">
+                                Nepopolna · manjka {item.missing_sector_hours ?? '?'} SH
+                              </small>
+                            ) : null}
+                          </>
+                        )}
+                      </td>
                       <td>{item.parsed_total}</td>
                       <td>{item.license_counts.FL}</td>
                       <td>{item.license_counts.APS}</td>
@@ -2997,15 +3290,70 @@ function ManualConfigurationsPanel({
               <div className="panel-header compact">
                 <div>
                   <p className="eyebrow">Izbrana konfiguracija</p>
-                  <h2>{detail.name}</h2>
-                  {detail.source_type === 'user' ? <span className="manual-source-badge">Shranjena s strani uporabnika</span> : null}
+                  {editingName?.id === detail.id && editingName.location === 'detail' ? (
+                    <input
+                      aria-label={`Novo ime konfiguracije ${detail.name}`}
+                      autoFocus
+                      className="manual-detail-name-input"
+                      disabled={updatingConfigId === detail.id}
+                      maxLength={120}
+                      onBlur={() => void commitNameEdit(detail)}
+                      onChange={(event) => setNameDraft(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault();
+                          event.currentTarget.blur();
+                        } else if (event.key === 'Escape') {
+                          event.preventDefault();
+                          setNameDraft(detail.name);
+                          setEditingName(null);
+                        }
+                      }}
+                      value={nameDraft}
+                    />
+                  ) : (
+                    <h2
+                      className={detail.source_type === 'user' ? 'editable-config-name' : undefined}
+                      onDoubleClick={() => beginNameEdit(detail, 'detail')}
+                      title={detail.source_type === 'user' ? 'Dvoklikni za preimenovanje' : undefined}
+                    >
+                      {detail.name}
+                    </h2>
+                  )}
+                  {detail.source_type === 'user' ? (
+                    <span className={detail.is_complete === false ? 'manual-source-badge incomplete' : 'manual-source-badge'}>
+                      {detail.is_complete === false
+                        ? `Nepopolna · ${detail.model_max_sector_hours}/${detail.requested_sector_hours ?? '?'} SH · manjka ${detail.missing_sector_hours ?? '?'} SH`
+                        : 'Shranjena s strani uporabnika'}
+                    </span>
+                  ) : null}
                 </div>
                 <div className="panel-actions">
-                  <button className="secondary-button compact-button" onClick={() => onOpenInCalculator(detail)} type="button">
-                    Odpri v kalkulatorju
+                  <button
+                    className="secondary-button compact-button"
+                    disabled={
+                      exportingExcelConfigId === detail.id
+                      || !(scheduleResult ?? detail.calculator_result)
+                    }
+                    onClick={() => void onExportExcel(detail)}
+                    type="button"
+                  >
+                    {exportingExcelConfigId === detail.id ? 'Pripravljam Excel ...' : 'Izvozi Excel'}
                   </button>
-                  <button className="secondary-button compact-button manual-transfer-button" onClick={() => onTransferDemandInput(detail)} type="button">
-                    Prenesi sektorske ure in št. ljudi v kalkulator
+                  <button
+                    className="secondary-button compact-button"
+                    onClick={() => onOpenInCalculator(detail)}
+                    type="button"
+                  >
+                    Odpri v KonfMakerju
+                  </button>
+                  <button
+                    className="secondary-button compact-button manual-transfer-button"
+                    data-tour="manual-transfer-demand"
+                    onClick={() => onTransferDemandInput(detail)}
+                    type="button"
+                  >
+                    Prenesi sektorske ure in št. ljudi v KonfMaker
                   </button>
                   <button
                     className="secondary-button compact-button"
@@ -3029,6 +3377,17 @@ function ManualConfigurationsPanel({
                   ) : null}
                 </div>
               </div>
+
+              {excelExportError ? <div className="error-box">{excelExportError}</div> : null}
+
+              {detail.source_type === 'user' ? (
+                <UserConfigurationNoteEditor
+                  configuration={detail}
+                  isUpdating={updatingConfigId === detail.id}
+                  key={`${detail.id}:${detail.note ?? ''}`}
+                  onUpdate={onUpdateUserConfiguration}
+                />
+              ) : null}
 
               {detail.unsupported_rows.length > 0 ? (
                 <div className="error-box">
@@ -3111,6 +3470,26 @@ function downloadTextFile(filename: string, text: string, mimeType: string): voi
   link.click();
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
+}
+
+function downloadBlobFile(filename: string, blob: Blob): void {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+function safeFilenamePart(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .toLowerCase();
 }
 
 function isCalculatorResponse(value: unknown): value is CalculatorResponse {
@@ -3986,6 +4365,9 @@ function normalizeShiftRules(shifts: ShiftRule[]): ShiftRule[] {
 function normalizeSettings(settings: CalculatorSettings): CalculatorSettings {
   return {
     ...settings,
+    coverage_priority: clamp(settings.coverage_priority ?? 100, 0, 100),
+    license_mix_priority: clamp(settings.license_mix_priority ?? 25, 0, 100),
+    short_shift_priority: clamp(settings.short_shift_priority ?? 100, 0, 100),
     include_required_shift_leaders: true,
     include_night_fl_requirement: settings.include_night_fl_requirement ?? true,
     shifts: normalizeShiftRules(settings.shifts),
@@ -4148,8 +4530,18 @@ function loadSavedCalculatorInputs(settings: CalculatorSettings): SavedCalculato
     const parsedFmpShift = typeof parsed.fmpShift === 'string' && parsed.fmpShift.trim()
       ? parsed.fmpShift.trim()
       : DEFAULT_FMP_SHIFT;
+    const savedBaseSectors = clamp(
+      Math.round(finiteNumber(parsed.baseSectors, 3)),
+      0,
+      settings.max_sectors_per_hour,
+    );
+    const savedSectorIntervals = normalizeSavedIntervals(
+      parsed.sectorIntervals,
+      settings.max_sectors_per_hour,
+    );
+    const hasLegacyStaffLimits = parsed.baseSectors !== undefined || Array.isArray(parsed.sectorIntervals);
     return {
-      calculationMode: parsed.calculationMode === 'demand_to_staff' ? 'demand_to_staff' : 'staff_to_coverage',
+      calculationMode: parsed.calculationMode === 'staff_to_coverage' ? 'staff_to_coverage' : 'demand_to_staff',
       totalPeople,
       flCount,
       apsCount,
@@ -4163,8 +4555,17 @@ function loadSavedCalculatorInputs(settings: CalculatorSettings): SavedCalculato
       sectorDemand: Array.isArray(parsed.sectorDemand)
         ? clampSectorDemand(parsed.sectorDemand, settings.max_sectors_per_hour)
         : createDefaultSectorDemand(settings.max_sectors_per_hour),
-      baseSectors: clamp(Math.round(finiteNumber(parsed.baseSectors, 3)), 0, settings.max_sectors_per_hour),
-      sectorIntervals: normalizeSavedIntervals(parsed.sectorIntervals, settings.max_sectors_per_hour),
+      staffSectorLimits: Array.isArray(parsed.staffSectorLimits)
+        ? normalizeStaffSectorLimits(parsed.staffSectorLimits, settings.max_sectors_per_hour)
+        : hasLegacyStaffLimits
+          ? buildSectorDemandFromIntervals(
+            settings.max_sectors_per_hour,
+            savedBaseSectors,
+            savedSectorIntervals,
+          )
+          : createUnlimitedSectorLimits(),
+      baseSectors: savedBaseSectors,
+      sectorIntervals: savedSectorIntervals,
       fixedStaff: normalizeSavedFixedStaff(parsed.fixedStaff, settings.shifts),
       officerStaff: normalizeSavedOfficerRows(parsed.officerStaff, settings.officer_shifts),
       officePool: normalizeSavedOfficePool(parsed.officePool),
@@ -4258,6 +4659,90 @@ function RequiredRoleLimitsEditor({
           max={24}
           value={settings.fmp_sector_limit}
           onChange={(value) => onChange({ ...settings, fmp_sector_limit: value })}
+        />
+      </div>
+    </section>
+  );
+}
+
+function optimizationPriorityLabel(value: number, zeroLabel = 'Izklopljeno'): string {
+  if (value <= 0) return zeroLabel;
+  if (value < 35) return 'Nizka';
+  if (value < 70) return 'Srednja';
+  if (value < 95) return 'Visoka';
+  return 'Najvišja';
+}
+
+function OptimizationPrioritySlider({
+  label,
+  value,
+  helper,
+  zeroLabel,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  helper: string;
+  zeroLabel?: string;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <label className="optimization-priority-slider">
+      <span className="optimization-priority-heading">
+        <strong>{label}</strong>
+        <b>{value}/100 · {optimizationPriorityLabel(value, zeroLabel)}</b>
+      </span>
+      <input
+        aria-label={label}
+        min="0"
+        max="100"
+        step="5"
+        type="range"
+        value={value}
+        onChange={(event) => onChange(clamp(Number(event.target.value), 0, 100))}
+      />
+      <small>{helper}</small>
+    </label>
+  );
+}
+
+function OptimizationPrioritiesEditor({
+  settings,
+  onChange,
+}: {
+  settings: CalculatorSettings;
+  onChange: (settings: CalculatorSettings) => void;
+}) {
+  return (
+    <section className="demand-card optimization-priorities-card" data-tour="optimization-priorities">
+      <div className="demand-header">
+        <div>
+          <p className="eyebrow">Prioritete optimizacije</p>
+          <h3>Kaj je solverju najpomembnejše?</h3>
+        </div>
+      </div>
+      <p className="demand-help compact-help">
+        Višja vrednost pomeni večjo težo. Ko je polna želena odprtost enkrat najdena, je drugi kriteriji ne smejo poslabšati.
+      </p>
+      <div className="optimization-priority-grid">
+        <OptimizationPrioritySlider
+          label="Doseganje želene odprtosti SH"
+          value={settings.coverage_priority}
+          zeroLabel="Samo varovalka"
+          helper="100 pomeni: najprej išči največ SH; doseženih 71 SH ostane zaščitenih."
+          onChange={(value) => onChange({ ...settings, coverage_priority: value })}
+        />
+        <OptimizationPrioritySlider
+          label="Ciljno razmerje FL / APS / ACS"
+          value={settings.license_mix_priority}
+          helper="Višje vrednosti močneje držijo odstotke licenc, vendar ne zmanjšajo že dosežene polne pokritosti."
+          onChange={(value) => onChange({ ...settings, license_mix_priority: value })}
+        />
+        <OptimizationPrioritySlider
+          label="Krajše izmene: 7 ur pred 8 urami"
+          value={settings.short_shift_priority}
+          helper="Višje vrednosti zmanjšujejo skupno dolžino izmen in dajejo prednost A7/A14, kadar je pokritost enaka."
+          onChange={(value) => onChange({ ...settings, short_shift_priority: value })}
         />
       </div>
     </section>
@@ -4591,25 +5076,25 @@ function SectorDemandInput({
   };
 
   return (
-    <section className="demand-card sector-demand-card">
+    <section className="demand-card sector-demand-card" data-tour="sector-demand">
       <div className="demand-header">
         <div>
           <p className="eyebrow">Faza 2</p>
           <h3>Želena odprtost po urah</h3>
         </div>
-        <button className="secondary-button compact-button" onClick={() => onChange(createDefaultSectorDemand(maxSectors))} type="button">
+        <button className="secondary-button compact-button" onClick={() => onChange(createMaximumSectorDemand(maxSectors))} type="button">
           Vse na max
         </button>
       </div>
       <p className="demand-help">Klikni celice po urah. Označene celice povedo, koliko sektorjev želiš imeti odprtih.</p>
       <div className="demand-scroll">
-        <div className="demand-grid" style={{ gridTemplateColumns: `84px repeat(${maxSectors}, minmax(42px, 1fr))` }}>
+        <div className="demand-grid" style={{ gridTemplateColumns: `64px repeat(${maxSectors}, minmax(42px, 1fr))` }}>
           <div className="demand-cell demand-head sticky-col">Ura</div>
           {sectorHeaders.map((sector) => (
             <div className="demand-cell demand-head" key={sector}>{sector.replace(' ', '\u00a0')}</div>
           ))}
           {hourLabels.flatMap((hour, hourIndex) => [
-            <div className="demand-cell demand-hour sticky-col" key={`${hour}-label`}>{hour}</div>,
+            <div className="demand-cell demand-hour sticky-col" key={`${hour}-label`}>{formatCompactHourLabel(hourIndex)}</div>,
             ...sectorHeaders.map((sector, sectorIndex) => {
               const selected = sectorIndex < (values[hourIndex] ?? 0);
               return (
@@ -4631,200 +5116,81 @@ function SectorDemandInput({
   );
 }
 
-function SectorIntervalEditor({
+function SectorLimitInput({
   maxSectors,
-  baseSectors,
-  intervals,
-  onBaseSectorsChange,
-  onIntervalsChange,
+  values,
+  onChange,
 }: {
   maxSectors: number;
-  baseSectors: number;
-  intervals: SectorDemandInterval[];
-  onBaseSectorsChange: (value: number) => void;
-  onIntervalsChange: (intervals: SectorDemandInterval[]) => void;
+  values: Array<number | null>;
+  onChange: (values: Array<number | null>) => void;
 }) {
-  const [importFeedback, setImportFeedback] = useState<string | null>(null);
-  const sectorCountOptions = Array.from({ length: maxSectors }, (_, index) => index + 1);
-  const hourOptions = Array.from({ length: HOURS_IN_DAY }, (_, hour) => hour);
-  const intervalPresets = [
-    {
-      label: 'Profil 70 iz Excela',
-      baseSectors: 3,
-      intervals: [
-        { sectorCount: 4, startHour: 9, endHour: 19 },
-        { sectorCount: 2, startHour: 0, endHour: 1 },
-        { sectorCount: 1, startHour: 1, endHour: 6 },
-        { sectorCount: 2, startHour: 6, endHour: 7 },
-      ],
-    },
-    {
-      label: 'Špica 72',
-      baseSectors: 3,
-      intervals: [
-        { sectorCount: 4, startHour: 8, endHour: 11 },
-        { sectorCount: 5, startHour: 11, endHour: 13 },
-        { sectorCount: 4, startHour: 11, endHour: 17 },
-        { sectorCount: 1, startHour: 1, endHour: 6 },
-        { sectorCount: 2, startHour: 6, endHour: 7 },
-      ],
-    },
-  ];
-  const previewSectorHours = buildSectorDemandFromIntervals(maxSectors, baseSectors, intervals).reduce(
-    (total, value) => total + value,
-    0,
-  );
+  const sectorHeaders = Array.from({ length: maxSectors }, (_, index) => `S${index + 1}`);
 
-  const addInterval = (sectorCount: number) => {
-    const nextId = Math.max(0, ...intervals.map((interval) => interval.id)) + 1;
-    onIntervalsChange([
-      ...intervals,
-      { id: nextId, sectorCount: clamp(sectorCount, 0, maxSectors), startHour: 8, endHour: 10 },
-    ]);
-  };
-
-  const updateInterval = (id: number, patch: Partial<SectorDemandInterval>) => {
-    onIntervalsChange(
-      intervals.map((interval) => (interval.id === id ? { ...interval, ...patch } : interval)),
-    );
-  };
-
-  const removeInterval = (id: number) => {
-    onIntervalsChange(intervals.filter((interval) => interval.id !== id));
-  };
-
-  const applyPreset = (preset: typeof intervalPresets[number]) => {
-    onBaseSectorsChange(clamp(preset.baseSectors, 0, maxSectors));
-    onIntervalsChange(preset.intervals.map((interval, index) => ({
-      id: index + 1,
-      sectorCount: clamp(interval.sectorCount, 1, maxSectors),
-      startHour: interval.startHour,
-      endHour: interval.endHour,
-    })));
-    setImportFeedback(null);
-  };
-
-  const importCsvText = (text: string) => {
-    const currentDemand = buildSectorDemandFromIntervals(maxSectors, baseSectors, intervals);
-    const parsed = parseSectorDemandCsv(text, maxSectors, currentDemand);
-    if (parsed.importedRows === 0) {
-      setImportFeedback('CSV ni imel veljavnih vrstic. Primer vrstice: 7-8;3');
-      return;
-    }
-
-    const nextBaseSectors = bestBaseSectorCount(parsed.demand, baseSectors, maxSectors);
-    const nextIntervals = intervalsFromSectorDemand(parsed.demand, nextBaseSectors, maxSectors);
-    onBaseSectorsChange(nextBaseSectors);
-    onIntervalsChange(nextIntervals);
-    setImportFeedback(
-      `Uvoženo ${parsed.importedRows} vrstic`
-      + (parsed.skippedRows > 0 ? `, preskočeno ${parsed.skippedRows}` : '')
-      + '.',
-    );
-  };
-
-  const importCsvFile = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) {
-      return;
-    }
-
-    try {
-      importCsvText(await file.text());
-    } catch {
-      setImportFeedback('Datoteke ni bilo mogoče prebrati.');
-    } finally {
-      event.target.value = '';
-    }
+  const setHourLimit = (hourIndex: number, sectorIndex: number) => {
+    const clickedLimit = sectorIndex + 1;
+    const currentLimit = values[hourIndex] ?? null;
+    const nextLimit = clickedLimit === maxSectors || currentLimit === clickedLimit
+      ? null
+      : clickedLimit;
+    onChange(values.map((value, index) => (index === hourIndex ? nextLimit : value)));
   };
 
   return (
-    <section className="demand-card sector-interval-card">
+    <section className="demand-card sector-demand-card sector-limit-card">
       <div className="demand-header">
         <div>
-          <p className="eyebrow">Ciljna odprtost</p>
-          <h3>
-            Intervali odprtosti
-            <MetricInfo text="Osnovno število velja ves dan. Intervali ga prepišejo samo za izbrane ure; pri prekrivanju velja višja vrednost." />
-          </h3>
+          <p className="eyebrow">Urne omejitve</p>
+          <h3>Največ sektorjev po urah</h3>
         </div>
-        <div className="interval-summary" aria-label="Skupaj ciljnih sektorskih ur">
-          <span>Cilj</span>
-          <strong>{previewSectorHours}</strong>
-        </div>
-      </div>
-      <NumberField
-        label="Osnovno sektorjev"
-        min={0}
-        max={maxSectors}
-        value={baseSectors}
-        onChange={onBaseSectorsChange}
-      />
-      <div className="interval-presets" aria-label="Hitri profili odprtosti">
-        {intervalPresets.map((preset) => (
-          <button className="secondary-button compact-button" onClick={() => applyPreset(preset)} type="button" key={preset.label}>
-            {preset.label}
-          </button>
-        ))}
-        <button className="secondary-button compact-button" onClick={() => onIntervalsChange([])} type="button">
-          Počisti intervale
+        <button
+          className="secondary-button compact-button"
+          onClick={() => onChange(createUnlimitedSectorLimits())}
+          type="button"
+        >
+          Brez omejitev
         </button>
       </div>
-      <div className="interval-import">
-        <label className="secondary-button compact-button file-import-button">
-          Uvozi CSV
-          <input accept=".csv,.txt,text/csv,text/plain" onChange={importCsvFile} type="file" />
-        </label>
-        <span>Format: <code>7-8;3</code></span>
-        {importFeedback ? <small>{importFeedback}</small> : null}
-      </div>
-      <div className="interval-list">
-        <div className="interval-row interval-head">
-          <span>Sektorji</span>
-          <span>Od</span>
-          <span>Do</span>
-          <span />
+      <p className="demand-help">
+        Privzeto ni dodatne omejitve. Klik na S2 pomeni, da sta v tej uri dovoljena največ 2 sektorja.
+      </p>
+      <div className="demand-scroll">
+        <div className="demand-grid" style={{ gridTemplateColumns: `64px repeat(${maxSectors}, minmax(42px, 1fr))` }}>
+          <div className="demand-cell demand-head sticky-col">Ura</div>
+          {sectorHeaders.map((sector) => (
+            <div className="demand-cell demand-head" key={sector}>{sector}</div>
+          ))}
+          {hourLabels.flatMap((hour, hourIndex) => {
+            const storedLimit = values[hourIndex] ?? null;
+            const unrestricted = storedLimit === null;
+            const currentLimit = storedLimit ?? maxSectors;
+            return [
+              <div
+                className={`demand-cell demand-hour sticky-col${unrestricted ? ' unrestricted' : ''}`}
+                key={`${hour}-limit-label`}
+                title={unrestricted ? 'Brez omejitve' : `Omejitev sektorjev: ${currentLimit}`}
+              >
+                {formatCompactHourLabel(hourIndex)}
+              </div>,
+              ...sectorHeaders.map((sector, sectorIndex) => {
+                const selected = sectorIndex < currentLimit;
+                const clickedLimit = sectorIndex + 1;
+                return (
+                  <button
+                    aria-label={`${hour}, omejitev sektorjev ${clickedLimit}`}
+                    className={`demand-cell demand-toggle limit-toggle ${selected ? 'selected' : ''}${unrestricted ? ' unrestricted' : ''}`}
+                    key={`${hour}-limit-${sector}`}
+                    onClick={() => setHourLimit(hourIndex, sectorIndex)}
+                    title={clickedLimit === maxSectors ? 'Brez dodatne omejitve' : `Omejitev sektorjev: ${clickedLimit}`}
+                    type="button"
+                  >
+                    {selected ? '✓' : '–'}
+                  </button>
+                );
+              }),
+            ];
+          })}
         </div>
-        {intervals.map((interval) => (
-          <div className="interval-row" key={interval.id}>
-            <select
-              value={clamp(interval.sectorCount, 1, maxSectors)}
-              onChange={(event) => updateInterval(interval.id, { sectorCount: Number(event.target.value) })}
-            >
-              {sectorCountOptions.map((count) => (
-                <option key={count} value={count}>{formatSectorCountLabel(count)}</option>
-              ))}
-            </select>
-            <select
-              aria-label="Od"
-              value={interval.startHour}
-              onChange={(event) => updateInterval(interval.id, { startHour: Number(event.target.value) })}
-            >
-              {hourOptions.map((hour) => (
-                <option key={hour} value={hour}>{hour.toString().padStart(2, '0')}:00</option>
-              ))}
-            </select>
-            <select
-              aria-label="Do"
-              value={interval.endHour}
-              onChange={(event) => updateInterval(interval.id, { endHour: Number(event.target.value) })}
-            >
-              {hourOptions.map((hour) => (
-                <option key={hour} value={hour}>{hour.toString().padStart(2, '0')}:00</option>
-              ))}
-            </select>
-            <button className="secondary-button compact-button" onClick={() => removeInterval(interval.id)} type="button">
-              Odstrani
-            </button>
-          </div>
-        ))}
-      </div>
-      <div className="interval-actions">
-        {sectorCountOptions.map((count) => (
-          <button className="secondary-button compact-button" onClick={() => addInterval(count)} type="button" key={count}>
-            + {formatSectorCountLabel(count)}
-          </button>
-        ))}
       </div>
     </section>
   );
@@ -4859,7 +5225,7 @@ function FixedStaffEditor({
   };
 
   return (
-    <section className="demand-card fixed-staff-card">
+    <section className="demand-card fixed-staff-card" data-tour="fixed-shifts">
       <div className="demand-header">
         <div>
           <p className="eyebrow">Vhodne izmene</p>
@@ -5499,6 +5865,365 @@ function MetricInfo({ text }: { text: string }) {
   );
 }
 
+function shouldShowOnboarding(): boolean {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+  try {
+    return window.localStorage.getItem(onboardingCompletedStorageKey) !== 'true';
+  } catch {
+    return true;
+  }
+}
+
+function KonfMakerOnboarding({
+  onDismiss,
+  onStartTour,
+}: {
+  onDismiss: () => void;
+  onStartTour: (kind: GuidedTourKind) => void;
+}) {
+  const [step, setStep] = useState<0 | 1>(0);
+
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onDismiss();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [onDismiss]);
+
+  const isFirstStep = step === 0;
+  return (
+    <div className="onboarding-backdrop" role="presentation">
+      <section
+        aria-describedby="konfmaker-onboarding-description"
+        aria-labelledby="konfmaker-onboarding-title"
+        aria-modal="true"
+        className="onboarding-dialog"
+        role="dialog"
+      >
+        <div className="onboarding-topline">
+          <div>
+            <p className="eyebrow">Hiter začetek</p>
+            <span className="onboarding-step-count">{step + 1} od 2</span>
+          </div>
+          <button aria-label="Zapri vodič" className="onboarding-close" onClick={onDismiss} type="button">×</button>
+        </div>
+
+        <div className="onboarding-progress" aria-label={`Korak ${step + 1} od 2`}>
+          <span className="complete" />
+          <span className={step === 1 ? 'complete' : ''} />
+        </div>
+
+        {isFirstStep ? (
+          <div className="onboarding-content">
+            <span className="onboarding-number">1</span>
+            <h2 id="konfmaker-onboarding-title">Nova konfiguracija iz vhodnih podatkov</h2>
+            <p id="konfmaker-onboarding-description">
+              Vnesi limit ljudi ali ga izpusti in določi samo želeno razmerje licenc. Nato nastavi ostale vhodne podatke,
+              izberi želeno število odprtih sektorjev po urah in zaženi izračun.
+            </p>
+            <div className="onboarding-flow">
+              <div>
+                <strong>1. Ljudje in licence</strong>
+                <span>Limit ljudi je neobvezen; uporabiš lahko samo odstotke FL, APS in ACS.</span>
+              </div>
+              <div>
+                <strong>2. Želena odprtost</strong>
+                <span>Po urah označi, koliko sektorjev želiš imeti odprtih.</span>
+              </div>
+              <div>
+                <strong>3. Poženi solver</strong>
+                <span>Klikni »Izračunaj potrebno zasedbo« in KonfMaker pripravi sestavo.</span>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="onboarding-content">
+            <span className="onboarding-number">2</span>
+            <h2 id="konfmaker-onboarding-title">Dodelaj obstoječo ročno konfiguracijo</h2>
+            <p id="konfmaker-onboarding-description">
+              Izberi obstoječo ročno konfiguracijo, jo prenesi v KonfMaker in jo nato popravi, izboljšaj ali dodatno optimiziraj.
+            </p>
+            <div className="onboarding-flow">
+              <div>
+                <strong>1. Izberi konfiguracijo</strong>
+                <span>Odpri zavihek »Ročne konfiguracije« in izberi želeno sestavo.</span>
+              </div>
+              <div>
+                <strong>2. Prenesi cilj v KonfMaker</strong>
+                <span>Klikni »Prenesi sektorske ure in št. ljudi v KonfMaker«; konkretne izmene se ne prenesejo.</span>
+              </div>
+              <div>
+                <strong>3. Izračunaj novo sestavo</strong>
+                <span>Preveri licence, odprtost in prioritete, nato naj solver izdela novo sestavo izmen.</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className="onboarding-actions">
+          <button className="secondary-button compact-button" onClick={onDismiss} type="button">Preskoči vodič</button>
+          <div>
+            {!isFirstStep ? (
+              <button className="secondary-button compact-button" onClick={() => setStep(0)} type="button">Nazaj</button>
+            ) : null}
+            {isFirstStep ? (
+              <button autoFocus className="primary-button compact-button" onClick={() => setStep(1)} type="button">Naprej</button>
+            ) : (
+              <>
+                <button className="secondary-button compact-button" onClick={() => onStartTour('manual-configuration')} type="button">
+                  Vodi me: ročna konfiguracija
+                </button>
+                <button autoFocus className="primary-button compact-button" onClick={() => onStartTour('new-configuration')} type="button">
+                  Vodi me: nova konfiguracija
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+const guidedTourSteps: Record<GuidedTourKind, GuidedTourStep[]> = {
+  'new-configuration': [
+    {
+      tab: 'calculator',
+      target: '[data-tour="calculation-mode"]',
+      title: '1. Izberi način izračuna',
+      description: 'Za novo konfiguracijo izberi »Odprtost sektorjev«. KonfMaker bo iz želene odprtosti izračunal potrebno zasedbo.',
+    },
+    {
+      tab: 'calculator',
+      target: '[data-tour="license-people"]',
+      title: '2. Določi ljudi in licence',
+      description: 'Limit ljudi lahko vključiš ali izpustiš. Nato nastavi ciljne odstotke licenc FL, APS in ACS.',
+    },
+    {
+      tab: 'calculator',
+      target: '[data-tour="fixed-shifts"]',
+      title: '3. Preveri posebne vhodne izmene',
+      description: 'Tu po potrebi vpišeš fiksne izmene. Pod tem so še office, officerji in omejitve vodij; prazne možnosti lahko preprosto preskočiš.',
+    },
+    {
+      tab: 'calculator',
+      target: '[data-tour="optimization-priorities"]',
+      title: '4. Izberi, kaj je najpomembnejše',
+      description: 'Z drsniki določiš prednost polni pokritosti SH, razmerju licenc in krajšim 7-urnim izmenam.',
+    },
+    {
+      tab: 'calculator',
+      target: '[data-tour="sector-demand"]',
+      title: '5. Vnesi želeno odprtost',
+      description: 'Klikni celice po urah in označi, koliko sektorjev želiš imeti odprtih. To je cilj, ki ga bo solver poskušal doseči.',
+    },
+    {
+      tab: 'calculator',
+      target: '[data-tour="calculate-button"]',
+      title: '6. Zaženi solver',
+      description: 'Klikni osvetljeni gumb »Izračunaj potrebno zasedbo«. Vodič se bo zaprl, izračun pa bo normalno stekel.',
+      finishOnTargetClick: true,
+    },
+  ],
+  'manual-configuration': [
+    {
+      tab: 'manual-configs',
+      target: '[data-tour="manual-config-list"]',
+      title: '1. Izberi ročno konfiguracijo',
+      description: 'V seznamu klikni konfiguracijo, ki jo želiš dodelati. Na desni se bodo prikazale njene podrobnosti in dejanja.',
+    },
+    {
+      tab: 'manual-configs',
+      target: '[data-tour="manual-transfer-demand"]',
+      title: '2. Prenesi cilj v KonfMaker',
+      description: 'Klikni »Prenesi sektorske ure in št. ljudi v KonfMaker«. Preneseta se ciljna odprtost po urah in število ljudi, ne konkretna sestava izmen.',
+      advanceOnTargetClick: true,
+    },
+    {
+      tab: 'calculator',
+      target: '[data-tour="license-people"]',
+      title: '3. Preveri število ljudi in licence',
+      description: 'KonfMaker je vključil limit s prenesenim številom ljudi. Preveri še ciljno razmerje licenc FL, APS in ACS.',
+    },
+    {
+      tab: 'calculator',
+      target: '[data-tour="sector-demand"]',
+      title: '4. Preveri prenesene sektorske ure',
+      description: 'Želena odprtost po posameznih urah je prenesena iz ročne konfiguracije. Po potrebi jo lahko še spremeniš, konkretne izmene pa niso bile prenesene.',
+    },
+    {
+      tab: 'calculator',
+      target: '[data-tour="optimization-priorities"]',
+      title: '5. Nastavi cilj izboljšave',
+      description: 'Določi, ali naj solver predvsem ohrani SH, drži razmerje licenc ali pogosteje zamenja 8-urne izmene s 7-urnimi.',
+    },
+    {
+      tab: 'calculator',
+      target: '[data-tour="calculate-button"]',
+      title: '6. Ponovno optimiziraj',
+      description: 'Klikni osvetljeni gumb za izračun. Solver bo iz prenesenega cilja SH in limita ljudi izdelal novo sestavo izmen.',
+      finishOnTargetClick: true,
+    },
+  ],
+};
+
+function GuidedTour({
+  kind,
+  onClose,
+  onRequestTab,
+}: {
+  kind: GuidedTourKind;
+  onClose: () => void;
+  onRequestTab: (tab: Tab) => void;
+}) {
+  const [stepIndex, setStepIndex] = useState(0);
+  const [targetAvailable, setTargetAvailable] = useState(false);
+  const steps = guidedTourSteps[kind];
+  const step = steps[stepIndex];
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [onClose]);
+
+  useEffect(() => {
+    onRequestTab(step.tab);
+    let highlightedTarget: HTMLElement | null = null;
+    let targetClickHandler: (() => void) | null = null;
+    let scrollTimer: ReturnType<typeof window.setTimeout> | null = null;
+
+    const connectTarget = () => {
+      if (highlightedTarget) {
+        return true;
+      }
+      const nextTarget = document.querySelector<HTMLElement>(step.target);
+      if (!nextTarget) {
+        return false;
+      }
+      highlightedTarget = nextTarget;
+      highlightedTarget.classList.add('guided-tour-target');
+      setTargetAvailable(true);
+      scrollTimer = window.setTimeout(() => {
+        highlightedTarget?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+      }, 80);
+
+      if (step.advanceOnTargetClick || step.finishOnTargetClick) {
+        targetClickHandler = () => {
+          window.setTimeout(() => {
+            if (step.finishOnTargetClick) {
+              onClose();
+            } else {
+              setTargetAvailable(false);
+              setStepIndex((current) => Math.min(current + 1, steps.length - 1));
+            }
+          }, 0);
+        };
+        highlightedTarget.addEventListener('click', targetClickHandler);
+      }
+      return true;
+    };
+
+    const observer = new MutationObserver(() => {
+      if (connectTarget()) {
+        observer.disconnect();
+      }
+    });
+    if (!connectTarget()) {
+      observer.observe(document.body, { childList: true, subtree: true });
+    }
+
+    return () => {
+      observer.disconnect();
+      if (scrollTimer !== null) {
+        window.clearTimeout(scrollTimer);
+      }
+      if (highlightedTarget) {
+        highlightedTarget.classList.remove('guided-tour-target');
+        if (targetClickHandler) {
+          highlightedTarget.removeEventListener('click', targetClickHandler);
+        }
+      }
+    };
+  }, [onClose, onRequestTab, step, steps.length]);
+
+  const isLastStep = stepIndex === steps.length - 1;
+  const unavailableHint = kind === 'manual-configuration' && step.target === '[data-tour="manual-transfer-demand"]'
+    ? 'Najprej klikni konfiguracijo v seznamu. Ko se podrobnosti odprejo, se bo označil pravi gumb.'
+    : 'Ta del strani se še nalaga. Vodič bo nadaljeval takoj, ko bo pripravljen.';
+
+  return (
+    <>
+      <div className="guided-tour-dimmer" aria-hidden="true" />
+      <aside aria-live="polite" className="guided-tour-popover" role="dialog" aria-label="Interaktivni vodič po KonfMakerju">
+        <div className="guided-tour-popover-top">
+          <div>
+            <p className="eyebrow">Interaktivni vodič</p>
+            <span>{stepIndex + 1} od {steps.length}</span>
+          </div>
+          <button aria-label="Zapri interaktivni vodič" className="onboarding-close" onClick={onClose} type="button">×</button>
+        </div>
+        <div className="guided-tour-progress" aria-hidden="true">
+          <span style={{ width: `${((stepIndex + 1) / steps.length) * 100}%` }} />
+        </div>
+        <h3>{step.title}</h3>
+        <p>{step.description}</p>
+        {!targetAvailable ? <div className="guided-tour-hint">{unavailableHint}</div> : null}
+        <div className="guided-tour-actions">
+          <button className="secondary-button compact-button" onClick={onClose} type="button">
+            Končaj vodič
+          </button>
+          <div>
+            {stepIndex > 0 ? (
+              <button
+                className="secondary-button compact-button"
+                onClick={() => {
+                  setTargetAvailable(false);
+                  setStepIndex((current) => current - 1);
+                }}
+                type="button"
+              >
+                Nazaj
+              </button>
+            ) : null}
+            {isLastStep ? (
+              <span className="guided-tour-click-prompt">Klikni osvetljeni gumb</span>
+            ) : step.advanceOnTargetClick ? (
+              <span className="guided-tour-click-prompt">Klikni osvetljeni gumb</span>
+            ) : (
+              <button
+                className="primary-button compact-button"
+                disabled={!targetAvailable}
+                onClick={() => {
+                  setTargetAvailable(false);
+                  setStepIndex((current) => current + 1);
+                }}
+                type="button"
+              >
+                Naprej
+              </button>
+            )}
+          </div>
+        </div>
+      </aside>
+    </>
+  );
+}
+
 function ConfigurationSimilaritySummary({
   comparison,
   isLoading,
@@ -5666,29 +6391,242 @@ function PairHourlyList({ metrics, other }: { metrics: PairConfigMetrics; other:
   );
 }
 
-function PairSectorFlow({ metrics, other }: { metrics: PairConfigMetrics; other: PairConfigMetrics }) {
-  const otherRows = mapHourRows(other.hourlyRows);
+function PairScheduleWorkerChip({
+  workerId,
+  peopleById,
+}: {
+  workerId: string;
+  peopleById: Map<string, VirtualPerson>;
+}) {
+  const person = peopleById.get(workerId);
+  const color = workerColor(workerId);
+  const label = person ? personDisplayId(person) : workerId;
+  const meta = person ? `${person.license} · ${person.shift}` : '';
   return (
-    <div className="pair-sector-flow">
-      {metrics.hourlyRows.map((row) => {
-        const counterpart = otherRows.get(row.hour);
-        const hasDiff = row.open !== (counterpart?.open ?? 0) || row.signature !== (counterpart?.signature ?? '');
+    <span
+      className="pair-schedule-worker"
+      style={{ backgroundColor: color.background, borderColor: color.border }}
+      title={meta ? `${label} / ${meta}` : label}
+    >
+      <strong>{label}</strong>
+      {meta ? <small>{meta}</small> : null}
+    </span>
+  );
+}
+
+function PairSectorFlow({ left, right }: { left: PairConfigMetrics; right: PairConfigMetrics }) {
+  const leftResult = left.calculatorResult;
+  const rightResult = right.calculatorResult;
+  const leftPeopleById = useMemo(
+    () => new Map((leftResult?.people ?? []).map((person) => [person.id, person])),
+    [leftResult],
+  );
+  const rightPeopleById = useMemo(
+    () => new Map((rightResult?.people ?? []).map((person) => [person.id, person])),
+    [rightResult],
+  );
+  const maxSectors = Math.max(
+    1,
+    ...(leftResult?.hourly_coverage.map((hour) => hour.sector_workers.length) ?? []),
+    ...(rightResult?.hourly_coverage.map((hour) => hour.sector_workers.length) ?? []),
+  );
+  const leftBreakPeopleBySlot = useMemo(() => {
+    if (!leftResult) {
+      return [];
+    }
+    return leftResult.hourly_coverage.map((hour, slot) => {
+      const assignedWorkerIds = new Set(hour.sector_workers.flatMap(workerIdsForSector));
+      return leftResult.people.filter((person) => (
+        personIsActiveInSlot(person, slot, fallbackSettings.shifts)
+        && !assignedWorkerIds.has(person.id)
+      ));
+    });
+  }, [leftResult]);
+  const rightBreakPeopleBySlot = useMemo(() => {
+    if (!rightResult) {
+      return [];
+    }
+    return rightResult.hourly_coverage.map((hour, slot) => {
+      const assignedWorkerIds = new Set(hour.sector_workers.flatMap(workerIdsForSector));
+      return rightResult.people.filter((person) => (
+        personIsActiveInSlot(person, slot, fallbackSettings.shifts)
+        && !assignedWorkerIds.has(person.id)
+      ));
+    });
+  }, [rightResult]);
+
+  if (!leftResult || !rightResult) {
+    return <div className="manual-audit-empty">Podroben sektorski razpored za izbrani par ni na voljo.</div>;
+  }
+
+  const visibleHours = Array.from(
+    { length: Math.max(leftResult.hourly_coverage.length, rightResult.hourly_coverage.length) },
+    (_, slot) => ({
+      slot,
+      hour: leftResult.hourly_coverage[slot]?.hour
+        ?? rightResult.hourly_coverage[slot]?.hour
+        ?? hourLabels[slot]
+        ?? String(slot),
+    }),
+  );
+  const sectorHeaders = Array.from(
+    { length: maxSectors },
+    (_, index) => sectorColumnLabels[index] ?? `S${index + 1}`,
+  );
+  const gridTemplateColumns = `38px repeat(${maxSectors}, minmax(0, 1fr)) 56px repeat(${maxSectors}, minmax(0, 1fr)) 56px`;
+  const sideColumnCount = maxSectors + 1;
+
+  const renderSideCells = (
+    side: 'left' | 'right',
+    result: CalculatorResponse,
+    peopleById: Map<string, VirtualPerson>,
+    breakPeopleBySlot: VirtualPerson[][],
+    slot: number,
+    hourKey: string,
+  ) => {
+    const hour = result.hourly_coverage[slot];
+    return [
+      ...Array.from({ length: maxSectors }, (_, sectorIndex) => {
+        const sector = hour?.sector_workers[sectorIndex] ?? null;
+        const workers = sector ? workerIdsForSector(sector) : [];
+        const dividerClass = side === 'right' && sectorIndex === 0 ? ' pair-schedule-divider' : '';
         return (
-          <div className={`pair-sector-hour ${hasDiff ? 'has-diff' : ''}`} key={row.hour}>
-            <span>{row.hour}</span>
-            <div className="pair-sector-chip-list">
-              {row.sectors.length > 0 ? row.sectors.map((sector) => (
-                <b key={sector}>{sector}</b>
-              )) : <em>zaprto</em>}
-            </div>
+          <div
+            className={`pair-schedule-cell pair-schedule-sector ${sector ? 'assigned' : 'closed'}${dividerClass}`}
+            key={`${hourKey}-${side}-${sectorIndex}`}
+            title={sector?.sector_name ?? 'Zaprto'}
+          >
+            {workers.length > 0 ? (
+              <span className="pair-schedule-worker-pair">
+                {workers.map((workerId) => (
+                  <PairScheduleWorkerChip
+                    key={`${sectorIndex}-${workerId}`}
+                    workerId={workerId}
+                    peopleById={peopleById}
+                  />
+                ))}
+              </span>
+            ) : (
+              <span className="pair-schedule-closed">—</span>
+            )}
           </div>
         );
-      })}
+      }),
+      <div className="pair-schedule-cell pair-schedule-break" key={`${hourKey}-${side}-break`}>
+        {breakPeopleBySlot[slot]?.length ? (
+          <span className="pair-schedule-break-list">
+            {breakPeopleBySlot[slot].map((person) => {
+              const color = workerColor(person.id);
+              return (
+                <span
+                  key={person.id}
+                  style={{ backgroundColor: color.background, borderColor: color.border }}
+                  title={`${personDisplayId(person)} / ${person.license} / ${person.shift}`}
+                >
+                  {personDisplayId(person)}
+                </span>
+              );
+            })}
+          </span>
+        ) : (
+          <span className="pair-schedule-closed">—</span>
+        )}
+      </div>,
+    ];
+  };
+
+  return (
+    <div className="pair-schedule pair-combined-schedule">
+      <div
+        className="pair-combined-schedule-headings"
+        style={{ gridTemplateColumns }}
+      >
+        <div className="pair-combined-hour-gutter" />
+        <div className="pair-combined-config-header" style={{ gridColumn: `span ${sideColumnCount}` }}>
+          <PairCardHeader metrics={left} side="Levo" />
+        </div>
+        <div
+          className="pair-combined-config-header pair-combined-config-header-right"
+          style={{ gridColumn: `span ${sideColumnCount}` }}
+        >
+          <PairCardHeader metrics={right} side="Desno" />
+        </div>
+      </div>
+      <div className="pair-schedule-frame">
+        <div
+          className="pair-schedule-grid"
+          style={{ gridTemplateColumns }}
+        >
+          <div className="pair-schedule-cell pair-schedule-head">Ura</div>
+          {sectorHeaders.map((sector) => (
+            <div className="pair-schedule-cell pair-schedule-head" key={`left-${sector}`}>{sector}</div>
+          ))}
+          <div className="pair-schedule-cell pair-schedule-head">Pavza</div>
+          {sectorHeaders.map((sector, index) => (
+            <div
+              className={`pair-schedule-cell pair-schedule-head${index === 0 ? ' pair-schedule-divider' : ''}`}
+              key={`right-${sector}`}
+            >
+              {sector}
+            </div>
+          ))}
+          <div className="pair-schedule-cell pair-schedule-head">Pavza</div>
+
+          {visibleHours.flatMap(({ hour, slot }) => [
+            <div className="pair-schedule-cell pair-schedule-hour" key={`${hour}-hour`}>
+              <ScheduleHourLabel hour={hour} />
+            </div>,
+            ...renderSideCells('left', leftResult, leftPeopleById, leftBreakPeopleBySlot, slot, hour),
+            ...renderSideCells('right', rightResult, rightPeopleById, rightBreakPeopleBySlot, slot, hour),
+          ])}
+        </div>
+      </div>
     </div>
   );
 }
 
 function PairWorkload({ metrics, other }: { metrics: PairConfigMetrics; other: PairConfigMetrics }) {
+  const result = metrics.calculatorResult;
+  if (result) {
+    return (
+      <div className="pair-people-table-wrap">
+        <table className="pair-people-table">
+          <thead>
+            <tr>
+              <th>Oseba</th>
+              <th>Vloga</th>
+              <th>Vir</th>
+              <th>Izmena</th>
+              <th>Lic.</th>
+              <th>SH</th>
+              <th>Izkoriščenost</th>
+            </tr>
+          </thead>
+          <tbody>
+            {result.people.map((person) => (
+              <tr key={person.id}>
+                <td className="strong">{personDisplayId(person)}</td>
+                <td>{person.role ?? '—'}</td>
+                <td title={personSourceLabel(person.source)}>{personSourceLabel(person.source)}</td>
+                <td>{person.shift}</td>
+                <td><span className={`pair-license pair-license-${person.license.toLowerCase()}`}>{person.license}</span></td>
+                <td>{person.sector_hours}/{person.max_sector_hours}</td>
+                <td>
+                  <div className="pair-utilization-cell">
+                    <div className="pair-utilization-track">
+                      <div style={{ width: `${clamp(person.utilization_percent, 0, 100)}%` }} />
+                    </div>
+                    <strong>{person.utilization_percent}%</strong>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
   const ownBuckets = mapWorkloadBuckets(metrics.workloadBuckets);
   const otherBuckets = mapWorkloadBuckets(other.workloadBuckets);
   const bucketHours = [...new Set([...metrics.workloadBuckets, ...other.workloadBuckets].map((bucket) => bucket.hours))]
@@ -5791,16 +6729,7 @@ function ManualConfigurationPairComparison({
             <h2>Razpored po sektorjih</h2>
           </div>
         </div>
-        <div className="config-pair-grid">
-          <div className="config-compare-card">
-            <PairCardHeader metrics={left} side="Levo" />
-            <PairSectorFlow metrics={left} other={right} />
-          </div>
-          <div className="config-compare-card">
-            <PairCardHeader metrics={right} side="Desno" />
-            <PairSectorFlow metrics={right} other={left} />
-          </div>
-        </div>
+        <PairSectorFlow left={left} right={right} />
       </section>
 
       <section className="panel">
@@ -6138,7 +7067,7 @@ function Results({
   targetDemand: number[];
   targetDemandLabel: string | null;
   whatIfSummary: string | null;
-  onRunShiftWhatIf: (person: VirtualPerson, shift: string) => void;
+  onRunShiftWhatIf: (changes: ShiftWhatIfChange[]) => void;
   onImportResult: (result: CalculatorResponse) => void;
   onEditResult: (updater: (current: CalculatorResponse) => CalculatorResponse) => void;
   onCompleteConfiguration: (result: CalculatorResponse) => Promise<void>;
@@ -6147,6 +7076,8 @@ function Results({
   onOpenComparison: () => void;
 }) {
   const [whatIfShiftByPerson, setWhatIfShiftByPerson] = useState<Record<string, string>>({});
+  const [isExportingExcel, setIsExportingExcel] = useState(false);
+  const [excelExportError, setExcelExportError] = useState<string | null>(null);
   const paretoPoints = paretoResult?.points ?? result?.pareto_points ?? [];
 
   if (!result) {
@@ -6177,7 +7108,7 @@ function Results({
       <section className="panel empty-state">
         <div className="empty-icon">⌁</div>
         <h2>Vnesi podatke in zaženi kalkulator</h2>
-        <p>Rezultat bo pokazal maksimalne sektorske ure, sestavo izmen in urni prikaz odprtosti.</p>
+        <p>Rezultat bo pokazal predlagano zasedbo, sestavo izmen in urni prikaz odprtosti.</p>
         <div className="panel-actions empty-actions">
           <ResultCsvImportButton onImport={onImportResult} />
         </div>
@@ -6239,10 +7170,33 @@ function Results({
         detail: 'Ta način ne dokazuje najmanjšega števila ljudi.',
       };
   const canRunPersonWhatIf = (person: VirtualPerson) => (
-    ['regular', 'fixed', 'what-if'].includes(person.source) || isOfficeSource(person.source)
+    ['regular', 'fixed', 'what-if', 'pattern-core'].includes(person.source) || isOfficeSource(person.source)
   );
+  const selectedWhatIfChanges = selectedShiftWhatIfChanges(result.people, whatIfShiftByPerson)
+    .filter(({ person }) => canRunPersonWhatIf(person));
   const applyManualResultEdit = (mutator: (current: CalculatorResponse) => CalculatorResponse) => {
     onEditResult((current) => recomputeEditedResult(mutator(current), scheduleShiftRules));
+  };
+  const exportExcel = async () => {
+    const exportLabel = targetDemandLabel ?? `Konfiguracija ${result.max_sector_hours} SH`;
+    setIsExportingExcel(true);
+    setExcelExportError(null);
+    try {
+      const blob = await exportCalculatorWorkbook(
+        paretoPoints === result.pareto_points
+          ? result
+          : { ...result, pareto_points: paretoPoints },
+        exportLabel,
+        targetBySlot,
+        scheduleShiftRules,
+      );
+      const fileLabel = safeFilenamePart(exportLabel.replace(/^Ročna konfiguracija\s+/i, ''));
+      downloadBlobFile(`konfmaker-${fileLabel || 'konfiguracija'}.xlsx`, blob);
+    } catch (caught) {
+      setExcelExportError(caught instanceof Error ? caught.message : 'Excel izvoza ni bilo mogoče pripraviti.');
+    } finally {
+      setIsExportingExcel(false);
+    }
   };
   const changePersonLicense = (personId: string, license: License) => {
     applyManualResultEdit((current) => ({
@@ -6307,34 +7261,52 @@ function Results({
             Shrani CSV
           </button>
           <button
-            className="secondary-button compact-button"
-            disabled={isCalculationBusy || isSavingUserConfiguration || result.missing_sector_hours > 0}
-            onClick={() => void onSaveUserConfiguration(result)}
+            className="secondary-button compact-button copy-button"
+            disabled={isExportingExcel}
+            onClick={() => void exportExcel()}
             type="button"
           >
-            {isSavingUserConfiguration ? 'Shranjujem ...' : 'Shrani konfiguracijo'}
+            {isExportingExcel ? 'Pripravljam Excel ...' : 'Izvozi Excel'}
           </button>
           <button
             className="secondary-button compact-button"
-            disabled={isCalculationBusy}
-            onClick={() => void onOptimizeLockedRoster(result)}
-            title="Zaklene trenutno sestavo ljudi in izmen, nato solver ponovno optimizira sektorski razpored."
+            disabled={isCalculationBusy || isSavingUserConfiguration}
+            onClick={() => void onSaveUserConfiguration(result)}
             type="button"
           >
-            Optimiziraj z zaklenjeno sestavo
+            {isSavingUserConfiguration
+              ? 'Shranjujem ...'
+              : result.missing_sector_hours > 0
+                ? 'Shrani delni rezultat'
+                : 'Shrani konfiguracijo'}
           </button>
-          {result.missing_sector_hours > 0 ? (
+          <span className="result-action-with-help">
             <button
               className="secondary-button compact-button"
-              disabled={isCalculationBusy || isCompletingConfiguration}
-              onClick={() => void onCompleteConfiguration(result)}
+              disabled={isCalculationBusy}
+              onClick={() => void onOptimizeLockedRoster(result)}
               type="button"
             >
-              {isCompletingConfiguration ? 'Dopolnjujem ...' : 'Dopolni do polne konfiguracije'}
+              Optimiziraj z zaklenjeno sestavo
             </button>
+            <MetricInfo text="Zaklene iste osebe, licence, vloge in izmene. Solver lahko spremeni samo razpored po sektorjih in urah; izmen ne zamenja." />
+          </span>
+          {result.missing_sector_hours > 0 ? (
+            <span className="result-action-with-help">
+              <button
+                className="secondary-button compact-button"
+                disabled={isCalculationBusy || isCompletingConfiguration}
+                onClick={() => void onCompleteConfiguration(result)}
+                type="button"
+              >
+                {isCompletingConfiguration ? 'Dopolnjujem ...' : 'Dopolni do polne konfiguracije'}
+              </button>
+              <MetricInfo text="Do 180 sekund išče polno pokritost z enakim številom ljudi. Lahko spremeni izmene in razmerje licenc ter preizkusi višje sektorske omejitve VI/FMP." />
+            </span>
           ) : null}
           <ResultCsvImportButton onImport={onImportResult} />
         </div>
+        {excelExportError ? <div className="error-box">{excelExportError}</div> : null}
       </section>
 
       {whatIfSummary ? (
@@ -6524,6 +7496,34 @@ function Results({
             <CopyButton textFactory={() => formatPeopleForCopy(result)} />
           </div>
         </div>
+        <div className="what-if-batch-actions">
+          <div>
+            <strong>Skupni what-if</strong>
+            <span>
+              V stolpcu What-if izberi nove izmene pri eni ali več osebah, nato zaženi en nov 600-sekundni izračun.
+              Izbrane spremembe so obvezne; preostala trenutna konfiguracija je samo mehki start.
+            </span>
+          </div>
+          <button
+            className="secondary-button compact-button"
+            disabled={isCalculationBusy || selectedWhatIfChanges.length === 0}
+            onClick={() => {
+              onRunShiftWhatIf(selectedWhatIfChanges);
+              setWhatIfShiftByPerson({});
+            }}
+            type="button"
+          >
+            Zaženi {selectedWhatIfChanges.length || ''} what-if
+          </button>
+          <button
+            className="secondary-button compact-button"
+            disabled={isCalculationBusy || selectedWhatIfChanges.length === 0}
+            onClick={() => setWhatIfShiftByPerson({})}
+            type="button"
+          >
+            Počisti izbor
+          </button>
+        </div>
         <div className="responsive-table">
           <table className="people-table">
             <thead>
@@ -6597,9 +7597,14 @@ function Results({
                           <select
                             value={selectedWhatIfShift}
                             disabled={isCalculationBusy}
-                            onChange={(event) => setWhatIfShiftByPerson({
-                              ...whatIfShiftByPerson,
-                              [person.id]: event.target.value,
+                            onChange={(event) => setWhatIfShiftByPerson((current) => {
+                              const next = { ...current };
+                              if (event.target.value === person.shift) {
+                                delete next[person.id];
+                              } else {
+                                next[person.id] = event.target.value;
+                              }
+                              return next;
                             })}
                             aria-label={`What-if izmena za ${person.id}`}
                           >
@@ -6609,14 +7614,9 @@ function Results({
                               </option>
                             ))}
                           </select>
-                          <button
-                            className="secondary-button compact-button"
-                            disabled={isCalculationBusy || selectedWhatIfShift === person.shift}
-                            onClick={() => onRunShiftWhatIf(person, selectedWhatIfShift)}
-                            type="button"
-                          >
-                            What-if
-                          </button>
+                          {selectedWhatIfShift !== person.shift ? (
+                            <span className="what-if-selected">Izbrano</span>
+                          ) : null}
                         </div>
                       ) : (
                         <span className="muted-cell">—</span>
@@ -6647,9 +7647,12 @@ function Results({
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>('calculator');
+  const [isOnboardingOpen, setIsOnboardingOpen] = useState(shouldShowOnboarding);
+  const [guidedTourKind, setGuidedTourKind] = useState<GuidedTourKind | null>(null);
+  const closeGuidedTour = useCallback(() => setGuidedTourKind(null), []);
   const [settings, setSettings] = useState<CalculatorSettings>(fallbackSettings);
   const [defaultSettings, setDefaultSettings] = useState<CalculatorSettings>(fallbackSettings);
-  const [calculationMode, setCalculationMode] = useState<CalculationMode>('staff_to_coverage');
+  const [calculationMode, setCalculationMode] = useState<CalculationMode>('demand_to_staff');
   const [totalPeople, setTotalPeople] = useState(28);
   const [flCount, setFlCount] = useState(12);
   const [apsCount, setApsCount] = useState(0);
@@ -6657,6 +7660,9 @@ export default function App() {
   const [usePeopleLimit, setUsePeopleLimit] = useState(false);
   const [minimumLicenseRatio, setMinimumLicenseRatio] = useState({ fl: 50, aps: 0, acs: 50 });
   const [sectorDemand, setSectorDemand] = useState(() => createDefaultSectorDemand(fallbackSettings.max_sectors_per_hour));
+  const [staffSectorLimits, setStaffSectorLimits] = useState(
+    createUnlimitedSectorLimits,
+  );
   const [sectorDemandQueue, setSectorDemandQueue] = useState<SectorDemandQueueItem[]>([]);
   const [activeDemandLabel, setActiveDemandLabel] = useState<string | null>(null);
   const [baseSectors, setBaseSectors] = useState(3);
@@ -6688,6 +7694,8 @@ export default function App() {
   const [manualResultConfigId, setManualResultConfigId] = useState<string | null>(null);
   const [manualSeedConfigId, setManualSeedConfigId] = useState<string | null>(null);
   const [manualLibraryError, setManualLibraryError] = useState<string | null>(null);
+  const [manualExcelExportError, setManualExcelExportError] = useState<string | null>(null);
+  const [exportingManualExcelConfigId, setExportingManualExcelConfigId] = useState<string | null>(null);
   const [isManualLibraryLoading, setIsManualLibraryLoading] = useState(false);
   const [isSavingUserConfiguration, setIsSavingUserConfiguration] = useState(false);
   const [pendingSaveResult, setPendingSaveResult] = useState<CalculatorResponse | null>(null);
@@ -6697,6 +7705,7 @@ export default function App() {
   const [configurationComparisonError, setConfigurationComparisonError] = useState<string | null>(null);
   const [isConfigurationComparisonLoading, setIsConfigurationComparisonLoading] = useState(false);
   const [deletingManualConfigId, setDeletingManualConfigId] = useState<string | null>(null);
+  const [updatingManualConfigId, setUpdatingManualConfigId] = useState<string | null>(null);
   const [oneDownConfigId, setOneDownConfigId] = useState<string | null>(null);
   const [settingsSaveState, setSettingsSaveState] = useState<'idle' | 'saved' | 'failed'>('idle');
   const [calculatorInputsSaveState, setCalculatorInputsSaveState] = useState<'idle' | 'saved' | 'failed'>('idle');
@@ -6725,7 +7734,7 @@ export default function App() {
         const savedInputs = loadSavedCalculatorInputs(loadedSettings);
         setSettings(loadedSettings);
         if (savedInputs) {
-          setCalculationMode(savedInputs.calculationMode ?? 'staff_to_coverage');
+          setCalculationMode(savedInputs.calculationMode ?? 'demand_to_staff');
           setTotalPeople(savedInputs.totalPeople ?? 28);
           setFlCount(savedInputs.flCount ?? 12);
           setApsCount(savedInputs.apsCount ?? 0);
@@ -6733,6 +7742,9 @@ export default function App() {
           setUsePeopleLimit(savedInputs.usePeopleLimit === true);
           setMinimumLicenseRatio(savedInputs.minimumLicenseRatio ?? { fl: 50, aps: 0, acs: 50 });
           setSectorDemand(savedInputs.sectorDemand ?? createDefaultSectorDemand(loadedSettings.max_sectors_per_hour));
+          setStaffSectorLimits(
+            savedInputs.staffSectorLimits ?? createUnlimitedSectorLimits(),
+          );
           setBaseSectors(savedInputs.baseSectors ?? 3);
           setSectorIntervals(savedInputs.sectorIntervals ?? createDefaultDemandIntervals());
           setFixedStaff(savedInputs.fixedStaff ?? []);
@@ -6822,21 +7834,11 @@ export default function App() {
     paretoResultVersionRef.current = Math.max(paretoResultVersionRef.current, resultVersion);
   }, []);
 
-  const weightedSectorDemand = useMemo(
-    () => buildSectorDemandFromIntervals(
-      settings.max_sectors_per_hour,
-      baseSectors,
-      sectorIntervals,
-    ),
-    [baseSectors, sectorIntervals, settings.max_sectors_per_hour],
-  );
-
   const effectiveSectorDemand = useMemo(
-    () => clampSectorDemand(
-      calculationMode === 'staff_to_coverage' ? weightedSectorDemand : sectorDemand,
-      settings.max_sectors_per_hour,
-    ),
-    [calculationMode, sectorDemand, settings.max_sectors_per_hour, weightedSectorDemand],
+    () => calculationMode === 'staff_to_coverage'
+      ? resolveStaffSectorLimits(staffSectorLimits, settings.max_sectors_per_hour)
+      : clampSectorDemand(sectorDemand, settings.max_sectors_per_hour),
+    [calculationMode, sectorDemand, settings.max_sectors_per_hour, staffSectorLimits],
   );
 
   const acsCount = useMemo(() => Math.max(0, totalPeople - flCount - apsCount), [apsCount, flCount, totalPeople]);
@@ -6909,6 +7911,7 @@ export default function App() {
         usePeopleLimit,
         minimumLicenseRatio,
         sectorDemand,
+        staffSectorLimits,
         baseSectors,
         sectorIntervals,
         fixedStaff,
@@ -7165,7 +8168,10 @@ export default function App() {
       license: row.license,
       shift: row.shift,
       role: row.role.trim() || null,
-    })).filter((row) => activeRegularShiftCodes.has(row.shift));
+    })).filter((row) => (
+      activeRegularShiftCodes.has(row.shift)
+      && (includeFmp || (row.role ?? '').toUpperCase() !== 'FMP')
+    ));
     const officerStaffPayload: OfficerStaffRule[] = mergeOfficerRows(officerStaff, settings.officer_shifts).flatMap((row) => [
       { count: clamp(row.fl, 0, 80), license: 'FL', shift: row.shift },
       { count: clamp(row.aps, 0, 80), license: 'APS', shift: row.shift },
@@ -7199,6 +8205,7 @@ export default function App() {
       leader_exception_mode: 'forbid',
       max_leader_exception_hours: 0,
       continuation_min_sector_hours: null,
+      warm_start_roster_priority: 0,
       solver_random_seed: 1,
       preferred_manual_configuration_id: manualSeedConfigId,
       warm_start: null,
@@ -7282,7 +8289,23 @@ export default function App() {
     setPausedPayload(null);
     setContinuationComparison(null);
     setManualResultConfigId(null);
-    await startCalculationFromPayload(buildRequestPayload(), true);
+    const basePayload = buildRequestPayload();
+    const previousPayload = lastCalculationPayloadRef.current;
+    const preservePreviousCoverage = Boolean(
+      result
+      && previousPayload
+      && enablesOnlyAdditionalRegularShifts(previousPayload, basePayload),
+    );
+    const payload = result
+      ? {
+          ...basePayload,
+          ...warmStartContinuationFields(result),
+          continuation_min_sector_hours: preservePreviousCoverage
+            ? Math.max(basePayload.continuation_min_sector_hours ?? 0, result.max_sector_hours)
+            : basePayload.continuation_min_sector_hours,
+        }
+      : basePayload;
+    await startCalculationFromPayload(payload, true);
   };
 
   const runLockedRosterOptimization = async (currentResult: CalculatorResponse) => {
@@ -7391,11 +8414,36 @@ export default function App() {
     }
   };
 
-  const saveCurrentResultAsUserConfiguration = async (currentResult: CalculatorResponse) => {
-    if (currentResult.missing_sector_hours > 0) {
-      setError('Shraniš lahko samo konfiguracijo, ki pokrije vse zahtevane sektorske ure.');
-      return;
+  const updateUserManualConfiguration = async (
+    configuration: ManualConfigurationSummary | ManualConfigurationDetail,
+    updates: { name: string; note: string | null },
+  ): Promise<boolean> => {
+    if (configuration.source_type !== 'user') {
+      setManualLibraryError('Urejaš lahko samo konfiguracije, shranjene s strani uporabnika.');
+      return false;
     }
+
+    setUpdatingManualConfigId(configuration.id);
+    setManualLibraryError(null);
+    try {
+      const updated = await updateUserConfiguration(configuration.id, updates);
+      setManualLibrary((current) => current ? {
+        ...current,
+        configurations: current.configurations.map((item) => (
+          item.id === updated.id ? { ...item, ...updated } : item
+        )),
+      } : current);
+      setManualDetail((current) => current?.id === updated.id ? updated : current);
+      return true;
+    } catch (caught) {
+      setManualLibraryError(caught instanceof Error ? caught.message : 'Napaka pri urejanju uporabniške konfiguracije.');
+      return false;
+    } finally {
+      setUpdatingManualConfigId(null);
+    }
+  };
+
+  const saveCurrentResultAsUserConfiguration = async (currentResult: CalculatorResponse) => {
     setSaveConfigurationName(defaultUserConfigurationName(currentResult));
     setPendingSaveResult(currentResult);
     setError(null);
@@ -7466,7 +8514,7 @@ export default function App() {
         startJob: () => startCompleteConfigurationJob({
           request: basePayload,
           current_result: currentResult,
-          time_limit_seconds: 8,
+          time_limit_seconds: COMPLETE_CONFIGURATION_TIME_LIMIT_SECONDS,
         }),
         clearResult: false,
         payload: basePayload,
@@ -7474,7 +8522,7 @@ export default function App() {
           kind: 'complete',
           payload: basePayload,
           currentResult,
-          timeLimitSeconds: 8,
+          timeLimitSeconds: COMPLETE_CONFIGURATION_TIME_LIMIT_SECONDS,
         },
         queuedMessage: 'Čaka v vrsti za dopolnitev konfiguracije.',
         errorMessage: 'Napaka pri dopolnjevanju konfiguracije.',
@@ -7487,9 +8535,33 @@ export default function App() {
   };
 
   const settingsForManualConfiguration = useCallback((configuration?: ManualConfigurationDetail): CalculatorSettings => {
+    const usedShiftCodes = new Set([
+      ...(configuration?.fixed_staff.map((row) => row.shift) ?? []),
+      ...(configuration?.officer_staff.map((row) => row.shift) ?? []),
+      ...(configuration?.calculator_result?.people.map((person) => person.shift) ?? []),
+    ]);
+    const manualRulesByCode = new Map(
+      configuration?.staff_rows
+        .filter((row) => row.start_hour !== null && row.duration_hours !== null)
+        .map((row) => [row.shift, row]) ?? [],
+    );
+    const activateManualShifts = (rules: ShiftRule[]): ShiftRule[] => rules.map((rule) => {
+      if (!usedShiftCodes.has(rule.code)) {
+        return rule;
+      }
+      const manualRule = manualRulesByCode.get(rule.code);
+      return {
+        ...rule,
+        start_hour: manualRule?.start_hour ?? rule.start_hour,
+        duration_hours: manualRule?.duration_hours ?? rule.duration_hours,
+        enabled: true,
+      };
+    });
     const baseSettings: CalculatorSettings = {
       ...settings,
       include_required_shift_leaders: true,
+      shifts: activateManualShifts(settings.shifts),
+      officer_shifts: activateManualShifts(settings.officer_shifts),
     };
     if (!configuration?.manual_schedule) {
       return baseSettings;
@@ -7514,6 +8586,41 @@ export default function App() {
     );
   }, [settings.max_sectors_per_hour]);
 
+  const exportManualConfigurationExcel = async (configuration: ManualConfigurationDetail) => {
+    const exportResult = (
+      manualResultConfigId === configuration.id ? result : null
+    ) ?? configuration.calculator_result;
+    if (!exportResult) {
+      setManualExcelExportError('Izbrana konfiguracija nima urnega razporeda za Excel izvoz.');
+      return;
+    }
+
+    setExportingManualExcelConfigId(configuration.id);
+    setManualExcelExportError(null);
+    try {
+      const manualDemand = sectorDemandFromManualConfiguration(configuration);
+      const targetDemand = Array.from(
+        { length: HOURS_IN_DAY },
+        (_, index) => manualDemand?.[index] ?? exportResult.hourly_coverage[index]?.open_sectors ?? 0,
+      );
+      const manualSettings = settingsForManualConfiguration(configuration);
+      const blob = await exportCalculatorWorkbook(
+        exportResult,
+        `Ročna konfiguracija ${configuration.name}`,
+        targetDemand,
+        [...manualSettings.shifts, ...manualSettings.officer_shifts],
+      );
+      const fileLabel = safeFilenamePart(configuration.name);
+      downloadBlobFile(`konfmaker-${fileLabel || 'rocna-konfiguracija'}.xlsx`, blob);
+    } catch (caught) {
+      setManualExcelExportError(
+        caught instanceof Error ? caught.message : 'Excel izvoza ni bilo mogoče pripraviti.',
+      );
+    } finally {
+      setExportingManualExcelConfigId(null);
+    }
+  };
+
   const applyManualConfigurationSectorDemand = useCallback((configuration: ManualConfigurationDetail): number[] | null => {
     const demand = sectorDemandFromManualConfiguration(configuration);
     if (!demand) {
@@ -7523,6 +8630,7 @@ export default function App() {
     setBaseSectors(nextBaseSectors);
     setSectorIntervals(intervalsFromSectorDemand(demand, nextBaseSectors, settings.max_sectors_per_hour));
     setSectorDemand(demand);
+    setStaffSectorLimits(demand);
     setActiveDemandLabel(`Ročna konfiguracija ${configuration.name}`);
     setManualSeedConfigId(configuration.id);
     return demand;
@@ -7531,6 +8639,7 @@ export default function App() {
   const openManualConfigurationInCalculator = (configuration: ManualConfigurationDetail) => {
     stopPolling();
     activeJobIdRef.current = null;
+    lastCalculationPayloadRef.current = null;
     clearCalculatorResults();
     setCalculationMode('staff_to_coverage');
     setTotalPeople(clamp(configuration.parsed_total, 1, 80));
@@ -7550,6 +8659,10 @@ export default function App() {
     setIncludeFmp(false);
     setSettings(manualSettings);
     applyManualConfigurationSectorDemand(configuration);
+    if (configuration.calculator_result) {
+      setResult(configuration.calculator_result);
+      setManualResultConfigId(configuration.id);
+    }
     setActiveTab('calculator');
   };
 
@@ -7611,68 +8724,80 @@ export default function App() {
     }
   };
 
-  const runShiftWhatIf = async (person: VirtualPerson, shift: string) => {
+  const runShiftWhatIf = async (changes: ShiftWhatIfChange[]) => {
     setContinuationComparison(null);
     if (!result) {
       setError('What-if je na voljo šele po izračunu.');
       return;
     }
-    if (shift === person.shift) {
-      return;
-    }
-    const activeRegularShiftCodes = activeShiftCodes(settings.shifts);
-    const activeOfficerShiftCodes = activeShiftCodes(settings.officer_shifts);
-    const isOfficeWhatIf = isOfficeSource(person.source);
-    if (!isOfficeWhatIf && !activeRegularShiftCodes.has(shift)) {
-      setError(`Izmena ${shift} je izključena v nastavitvah pravil.`);
-      return;
-    }
-    if (isOfficeWhatIf && !activeOfficerShiftCodes.has(shift)) {
-      setError(`Office izmena ${shift} je izključena v nastavitvah pravil.`);
+    if (changes.length === 0) {
       return;
     }
 
     const basePayload = lastCalculationPayloadRef.current ?? buildRequestPayload();
-    const whatIfTimeLimit = Math.min(basePayload.settings.cp_sat_time_limit_seconds, 120);
-    const currentNoImprovement = basePayload.settings.cp_sat_no_improvement_seconds;
-    const whatIfNoImprovement = currentNoImprovement === 0 ? 30 : Math.min(currentNoImprovement, 30);
-    const lockedStaffFromCurrentResult = result.people
-      .filter((currentPerson) => !isOfficeSource(currentPerson.source))
-      .map((currentPerson): LockedStaffRule => ({
+    const activeRegularShiftCodes = activeShiftCodes(basePayload.settings.shifts);
+    const activeOfficerShiftCodes = activeShiftCodes(basePayload.settings.officer_shifts);
+    for (const { person, shift } of changes) {
+      if (!isOfficeSource(person.source) && !activeRegularShiftCodes.has(shift)) {
+        setError(`Izmena ${shift} je izključena v nastavitvah pravil.`);
+        return;
+      }
+      if (isOfficeSource(person.source) && !activeOfficerShiftCodes.has(shift)) {
+        setError(`Office izmena ${shift} je izključena v nastavitvah pravil.`);
+        return;
+      }
+    }
+
+    const shiftByPersonId = new Map(changes.map(({ person, shift }) => [person.id, shift]));
+    const selectedRegularPeople = changes.filter(({ person }) => !isOfficeSource(person.source));
+    const selectedLockedStaff = selectedRegularPeople
+      .map(({ person, shift }): LockedStaffRule => ({
         count: 1,
-        license: leaderRoleDisplayId(currentPerson.role) ? 'FL' : currentPerson.license,
-        shift: !isOfficeWhatIf && currentPerson.id === person.id ? shift : currentPerson.shift,
-        role: currentPerson.role,
-        label: currentPerson.id,
+        license: leaderRoleDisplayId(person.role) ? 'FL' : person.license,
+        shift,
+        role: person.role,
+        label: person.id,
       }))
       .filter((row) => activeRegularShiftCodes.has(row.shift));
-    const officerStaffFromCurrentResult = result.people
-      .filter((currentPerson) => isOfficeSource(currentPerson.source))
-      .reduce<OfficerStaffRule[]>((rows, currentPerson) => {
-        const currentShift = isOfficeWhatIf && currentPerson.id === person.id ? shift : currentPerson.shift;
-        const existing = rows.find((row) => row.license === currentPerson.license && row.shift === currentShift);
-        if (existing) {
-          existing.count += 1;
-        } else {
-          rows.push({ count: 1, license: currentPerson.license, shift: currentShift });
-        }
-        return rows;
-      }, [])
-      .filter((row) => activeOfficerShiftCodes.has(row.shift));
+    const selectedOfficePeople = changes.filter(({ person }) => isOfficeSource(person.source));
+    const officerStaffForWhatIf = selectedOfficePeople.length > 0
+      ? result.people
+        .filter((person) => isOfficeSource(person.source))
+        .reduce<OfficerStaffRule[]>((rows, person) => {
+          const shift = shiftByPersonId.get(person.id) ?? person.shift;
+          const existing = rows.find((row) => row.license === person.license && row.shift === shift);
+          if (existing) {
+            existing.count += 1;
+          } else {
+            rows.push({ count: 1, license: person.license, shift });
+          }
+          return rows;
+        }, [])
+        .filter((row) => activeOfficerShiftCodes.has(row.shift))
+      : basePayload.officer_staff;
     const payload: CalculatorRequest = {
       ...basePayload,
       settings: {
-        ...settings,
-        cp_sat_time_limit_seconds: Math.max(1, whatIfTimeLimit),
-        cp_sat_no_improvement_seconds: whatIfNoImprovement,
+        ...fullWhatIfSolverSettings(basePayload.settings),
       },
-      fixed_staff: [],
-      locked_staff: lockedStaffFromCurrentResult,
-      officer_staff: officerStaffFromCurrentResult,
-      office_pool: basePayload.office_pool,
+      locked_staff: selectedLockedStaff,
+      officer_staff: officerStaffForWhatIf,
+      continuation_min_sector_hours: null,
+      solver_random_seed: Math.min(2_147_483_647, (basePayload.solver_random_seed ?? 1) + 1),
+      ...warmStartContinuationFields(result),
     };
 
-    setWhatIfSummary(`${personDisplayId(person)}: ${person.shift} -> ${shift}`);
+    const changeSummary = changes
+      .map(({ person, shift }) => `${personDisplayId(person)} ${person.shift}→${shift}`)
+      .join(', ');
+    setContinuationComparison({
+      actionLabel: `Skupni what-if: ${changeSummary}`,
+      baseline: result,
+      restartPlan: { kind: 'calculator', payload: basePayload },
+    });
+    setWhatIfSummary(
+      `Skupni what-if (${changes.length}): ${changeSummary}. Solver računa na novo 600 s; stara konfiguracija je mehki start.`,
+    );
     setPausedPayload(null);
     setManualResultConfigId(null);
     await startCalculationFromPayload(payload, false);
@@ -7828,7 +8953,7 @@ export default function App() {
     if (plan.kind === 'complete') {
       const completeWarmStart = warmStartResult ?? plan.currentResult;
       const payload = clonePayloadForRegularContinuation(plan.payload, extraSeconds, completeWarmStart, warmStartSnapshotId);
-      const nextTimeLimit = Math.min(120, plan.timeLimitSeconds + Math.max(8, plan.timeLimitSeconds));
+      const nextTimeLimit = Math.min(600, plan.timeLimitSeconds + extraSeconds);
       setWhatIfSummary(
         warmStartSnapshotId || completeWarmStart
           ? `Nadaljevanje dopolnitve +${extraSeconds} s iz začasne najboljše rešitve`
@@ -7896,13 +9021,111 @@ export default function App() {
         startJob: () => startCompleteConfigurationJob({
           request: payload,
           current_result: baseline ?? plan.currentResult,
-          time_limit_seconds: Math.min(120, Math.max(8, plan.timeLimitSeconds)),
+          time_limit_seconds: Math.min(600, Math.max(8, plan.timeLimitSeconds)),
         }),
         clearResult: false,
         payload,
         restartPlan: { ...plan, payload },
         queuedMessage: 'Čaka v vrsti za omejen krizni VI/FMP poskus.',
         errorMessage: 'Napaka pri kriznem VI/FMP poskusu.',
+      });
+      return;
+    }
+    await startCalculationFromPayload(payload, false);
+  };
+
+  const tryExtraPersonAfterTimeLimit = async () => {
+    if (!timeLimitDecision) {
+      return;
+    }
+    const decision = timeLimitDecision;
+    const plan = decision.restartPlan;
+    if (plan.kind === 'one-down') {
+      return;
+    }
+    const baseline = preserveContinuationBaseline(decision, 'Poskus z +1 osebo') ?? result;
+    if (!baseline) {
+      setTimeLimitDecision(null);
+      setError('Trenutna rešitev ni na voljo za poskus z dodatno osebo.');
+      return;
+    }
+    const payload = clonePayloadForExtraPerson(
+      plan.payload,
+      baseline,
+      decision.status.warm_start_snapshot_id,
+    );
+    if (!payload) {
+      setTimeLimitDecision(null);
+      setError('Dodatno osebo je mogoče preizkusiti samo v načinu Odprtost sektorjev do limita 80 ljudi.');
+      return;
+    }
+    setTimeLimitDecision(null);
+    setWhatIfSummary(
+      `Nov 600-sekundni poskus z +1 osebo; novi limit je ${payload.total_people} ljudi, prejšnja konfiguracija pa je mehki start.`,
+    );
+
+    if (plan.kind === 'complete') {
+      await startJobWithProgress({
+        startJob: () => startCompleteConfigurationJob({
+          request: payload,
+          current_result: baseline,
+          time_limit_seconds: FULL_WHAT_IF_TIME_LIMIT_SECONDS,
+        }),
+        clearResult: false,
+        payload,
+        restartPlan: { ...plan, payload, timeLimitSeconds: FULL_WHAT_IF_TIME_LIMIT_SECONDS },
+        queuedMessage: 'Čaka v vrsti za poskus z dodatno osebo.',
+        errorMessage: 'Napaka pri poskusu z dodatno osebo.',
+      });
+      return;
+    }
+    await startCalculationFromPayload(payload, false);
+  };
+
+  const tryLeaderSectorHoursAfterTimeLimit = async (
+    v1SectorLimit: number,
+    v2SectorLimit: number,
+  ) => {
+    if (!timeLimitDecision) {
+      return;
+    }
+    const decision = timeLimitDecision;
+    const plan = decision.restartPlan;
+    if (plan.kind === 'one-down') {
+      return;
+    }
+    const baseline = preserveContinuationBaseline(
+      decision,
+      `VI ure: VI1 do ${v1SectorLimit}, VI2 do ${v2SectorLimit}`,
+    ) ?? result;
+    const payload = clonePayloadForLeaderSectorHours(
+      plan.payload,
+      v1SectorLimit,
+      v2SectorLimit,
+      baseline,
+      decision.status.warm_start_snapshot_id,
+    );
+    setTimeLimitDecision(null);
+    setWhatIfSummary(
+      `Nov 600-sekundni izračun: VI1 do ${payload.settings.v1_sector_limit} ur, VI2 do ${payload.settings.v2_sector_limit} ur; prejšnja konfiguracija je mehki start.`,
+    );
+
+    if (plan.kind === 'complete') {
+      await startJobWithProgress({
+        startJob: () => startCompleteConfigurationJob({
+          request: payload,
+          current_result: baseline ?? plan.currentResult,
+          time_limit_seconds: FULL_WHAT_IF_TIME_LIMIT_SECONDS,
+        }),
+        clearResult: false,
+        payload,
+        restartPlan: {
+          ...plan,
+          payload,
+          timeLimitSeconds: FULL_WHAT_IF_TIME_LIMIT_SECONDS,
+        },
+        queuedMessage: 'Čaka v vrsti za nov poskus z več sektorskimi urami VI1/VI2.',
+        errorMessage: 'Napaka pri poskusu z več sektorskimi urami VI1/VI2.',
       });
       return;
     }
@@ -7933,7 +9156,7 @@ export default function App() {
         startJob: () => startCompleteConfigurationJob({
           request: payload,
           current_result: baseline ?? plan.currentResult,
-          time_limit_seconds: Math.min(120, Math.max(8, plan.timeLimitSeconds)),
+          time_limit_seconds: Math.min(600, Math.max(8, plan.timeLimitSeconds)),
         }),
         clearResult: false,
         payload,
@@ -7957,7 +9180,13 @@ export default function App() {
     }
     const warmStartResult = preserveContinuationBaseline(decision, 'Preizkus z operativnim office') ?? result;
     const warmStartSnapshotId = decision.status.warm_start_snapshot_id;
-    const payload = clonePayloadForOfficeFallback(plan.payload, officeSelection, warmStartResult, warmStartSnapshotId);
+    const payload = clonePayloadForOfficeFallback(
+      plan.payload,
+      includeFmp,
+      officeSelection,
+      warmStartResult,
+      warmStartSnapshotId,
+    );
     if (!hasOfficeFallbackSelection(officeSelection)) {
       setTimeLimitDecision(null);
       setError('Office fallback ni na voljo, ker ni vpisan noben operativni office.');
@@ -7965,36 +9194,14 @@ export default function App() {
     }
     setTimeLimitDecision(null);
 
-    if (plan.kind === 'complete') {
-      setWhatIfSummary(
-        officeSelection.mode === 'fixed'
-          ? `Dopolnitev: izbrana office izmena ${officeSelection.shift}`
-          : 'Dopolnitev: takojšnji preizkus operativnega office fallbacka',
-      );
-      await startJobWithProgress({
-        startJob: () => startCompleteConfigurationJob({
-          request: payload,
-          current_result: warmStartResult ?? plan.currentResult,
-          time_limit_seconds: Math.min(120, Math.max(8, plan.timeLimitSeconds)),
-        }),
-        clearResult: false,
-        payload,
-        restartPlan: {
-          ...plan,
-          payload,
-        },
-        queuedMessage: 'Čaka v vrsti za office fallback dopolnitev.',
-        errorMessage: 'Napaka pri office fallback dopolnitvi.',
-      });
-      return;
-    }
-
     setWhatIfSummary(
-      officeSelection.mode === 'fixed'
-        ? `Office nadaljevanje z izmeno ${officeSelection.shift} in prostim premešanjem`
+      `${officeSelection.mode === 'fixed'
+        ? `Office nadaljevanje z izmeno ${officeSelection.shift}`
         : warmStartSnapshotId || warmStartResult
           ? 'Office fallback iz začasne najboljše rešitve'
-          : 'Takojšnji preizkus operativnega office fallbacka',
+          : 'Takojšnji preizkus operativnega office fallbacka'}; `
+      + `600 s, FMP ${includeFmp ? 'vključen' : 'izključen'}, krajše izmene ostanejo optimizacijski cilj. `
+      + 'Obstoječa sestava ima prednost; spremembe izmen se uporabijo le, kadar izboljšajo izvedljivost.',
     );
     await startCalculationFromPayload(payload, false);
   };
@@ -8027,6 +9234,26 @@ export default function App() {
     setTimeLimitDecision(null);
     setContinuationComparison(null);
     setCalculationNotice('Obdržana je prejšnja rešitev pred nadaljevalnim poskusom.');
+  };
+
+  const rememberOnboardingCompletion = () => {
+    try {
+      window.localStorage.setItem(onboardingCompletedStorageKey, 'true');
+    } catch {
+      // Vodič se zapre tudi, kadar lokalna shramba brskalnika ni na voljo.
+    }
+    setIsOnboardingOpen(false);
+  };
+
+  const startGuidedTour = (kind: GuidedTourKind) => {
+    rememberOnboardingCompletion();
+    setGuidedTourKind(kind);
+    if (kind === 'new-configuration') {
+      setCalculationMode('demand_to_staff');
+      setActiveTab('calculator');
+    } else {
+      setActiveTab('manual-configs');
+    }
   };
 
   const cancelCurrentParetoAnalysis = async () => {
@@ -8072,19 +9299,22 @@ export default function App() {
     await loadManualConfigurationDetail(id);
   };
 
-  const programLabel = activeTab === 'analysis' || activeTab === 'theory'
-    ? '2 / Napoved SH'
-    : activeTab === 'future'
-      ? '3 / 15-min model'
-      : activeTab === 'airport'
-        ? '4 / LKZP'
-      : '1 / Kalkulator';
+  const isProgramThree = activeTab === 'analysis' || activeTab === 'theory';
+  const programLabel = activeTab === 'airport'
+    ? '2 / LKZP odprtost'
+    : isProgramThree
+      ? '3 / Analiza in teorija'
+      : '1 / KonfMaker';
   const heroTitle = activeTab === 'airport'
-    ? 'Razporejevalnik letaliških kontrol'
-    : 'Kalkulator sektorskih ur';
+    ? 'LKZP odprtost'
+    : isProgramThree
+      ? 'Analiza odprtosti sektorjev'
+      : 'KonfMaker';
   const heroDescription = activeTab === 'airport'
     ? 'Izbira dovoljenih izmen ter razpored dela, pavz in prisotnega asistenta za letališke kontrole.'
-    : 'Prvi programček za izračun maksimalnih sektorskih ur, obveznih FL vlog in predlagane sestave izmen.';
+    : isProgramThree
+      ? 'Analiza napovedane odprtosti sektorjev in razlaga teoretičnega ozadja modela.'
+      : 'Program za izračun maksimalnih sektorskih ur, obveznih FL vlog, primerjavo konfiguracij in predlagano sestavo izmen.';
   const cancellationInProgress = isCancellationInProgress(
     cancelAction,
     jobStatus?.cancel_requested === true,
@@ -8105,27 +9335,37 @@ export default function App() {
         <div className="hero-card">
           <span>Program</span>
           <strong>{programLabel}</strong>
+          <button
+            className="hero-guide-button"
+            onClick={() => {
+              setActiveTab('calculator');
+              setIsOnboardingOpen(true);
+            }}
+            type="button"
+          >
+            Zaženi vodič
+          </button>
         </div>
       </header>
 
       <nav className="tabs" aria-label="Glavna navigacija">
         <button className={activeTab === 'calculator' ? 'active' : ''} onClick={() => setActiveTab('calculator')} type="button">
-          Kalkulator sektorskih ur
-        </button>
-        <button className={activeTab === 'future' ? 'active' : ''} onClick={() => setActiveTab('future')} type="button">
-          Futuristični kalkulator
-        </button>
-        <button className={activeTab === 'airport' ? 'active' : ''} onClick={() => setActiveTab('airport')} type="button">
-          Letališke kontrole
+          KonfMaker
         </button>
         <button className={activeTab === 'settings' ? 'active' : ''} onClick={() => setActiveTab('settings')} type="button">
-          Nastavitev pravil
+          Pravila
         </button>
         <button className={activeTab === 'manual-configs' ? 'active' : ''} onClick={() => setActiveTab('manual-configs')} type="button">
           Ročne konfiguracije
         </button>
         <button className={activeTab === 'comparison' ? 'active' : ''} onClick={() => setActiveTab('comparison')} type="button">
           Primerjevalnik konfiguracij
+        </button>
+        <button className={activeTab === 'future' ? 'active' : ''} onClick={() => setActiveTab('future')} type="button">
+          Futuristični KonfMaker*
+        </button>
+        <button className={activeTab === 'airport' ? 'active' : ''} onClick={() => setActiveTab('airport')} type="button">
+          LKZP odprtost
         </button>
         <button className={activeTab === 'analysis' ? 'active' : ''} onClick={() => setActiveTab('analysis')} type="button">
           Analiza odprtosti sektorjev
@@ -8168,14 +9408,19 @@ export default function App() {
           error={manualLibraryError}
           isLoading={isManualLibraryLoading}
           oneDownConfigId={oneDownConfigId}
+          exportingExcelConfigId={exportingManualExcelConfigId}
+          excelExportError={manualExcelExportError}
           deletingConfigId={deletingManualConfigId}
+          updatingConfigId={updatingManualConfigId}
           selectedId={selectedManualConfigId}
           onLoadLibrary={loadManualConfigurations}
           onSelect={loadManualConfigurationDetail}
           onOpenInCalculator={openManualConfigurationInCalculator}
           onTransferDemandInput={transferManualDemandInputToCalculator}
           onRunOneDown={runManualConfigurationOneDownCheck}
+          onExportExcel={exportManualConfigurationExcel}
           onDeleteUserConfiguration={deleteUserManualConfiguration}
+          onUpdateUserConfiguration={updateUserManualConfiguration}
         />
       ) : activeTab === 'comparison' ? (
         <ConfigurationComparisonPanel
@@ -8193,20 +9438,22 @@ export default function App() {
           <section className="panel form-panel">
             <div className="form-panel-top">
               <h2>Vhodni podatki</h2>
-              <div className="mode-switch">
-                <button
-                  className={calculationMode === 'staff_to_coverage' ? 'active' : ''}
-                  onClick={() => setCalculationMode('staff_to_coverage')}
-                  type="button"
-                >
-                  1. Število ljudi
-                </button>
+              <div className="mode-switch" data-tour="calculation-mode">
                 <button
                   className={calculationMode === 'demand_to_staff' ? 'active' : ''}
                   onClick={() => setCalculationMode('demand_to_staff')}
                   type="button"
                 >
-                  2. Odprtost sektorjev
+                  <strong>Odprtost sektorjev</strong>
+                  <small>Koliko ljudi potrebujemo?</small>
+                </button>
+                <button
+                  className={calculationMode === 'staff_to_coverage' ? 'active' : ''}
+                  onClick={() => setCalculationMode('staff_to_coverage')}
+                  type="button"
+                >
+                  <strong>Določeno število ljudi</strong>
+                  <small>Kaj lahko naredimo?</small>
                 </button>
               </div>
               <div className="calculator-default-row">
@@ -8223,7 +9470,7 @@ export default function App() {
               </div>
             </div>
             {calculationMode === 'staff_to_coverage' ? (
-            <div className="form-grid">
+            <div className="form-grid" data-tour="staff-counts">
               <NumberField
                 label="Skupaj ljudi"
                 min={1}
@@ -8257,7 +9504,7 @@ export default function App() {
             </div>
             ) : null}
             {calculationMode === 'demand_to_staff' ? (
-              <section className="demand-card license-availability-card">
+              <section className="demand-card license-availability-card" data-tour="license-people">
                 <div className="demand-header">
                   <div>
                     <p className="eyebrow">Ciljno razmerje</p>
@@ -8375,6 +9622,7 @@ export default function App() {
               onChange={setOfficerStaff}
             />
             <RequiredRoleLimitsEditor settings={settings} onChange={setSettings} />
+            <OptimizationPrioritiesEditor settings={settings} onChange={setSettings} />
 
             <details className="demand-card pattern-library-card">
               <summary>Napredno: baza vzorcev</summary>
@@ -8440,12 +9688,14 @@ export default function App() {
             </details>
 
             {calculationMode === 'staff_to_coverage' ? (
-              <SectorIntervalEditor
+              <SectorLimitInput
                 maxSectors={settings.max_sectors_per_hour}
-                baseSectors={baseSectors}
-                intervals={sectorIntervals}
-                onBaseSectorsChange={setBaseSectors}
-                onIntervalsChange={setSectorIntervals}
+                values={staffSectorLimits}
+                onChange={(values) => {
+                  setStaffSectorLimits(normalizeStaffSectorLimits(values, settings.max_sectors_per_hour));
+                  setActiveDemandLabel(null);
+                  setManualSeedConfigId(null);
+                }}
               />
             ) : (
               <>
@@ -8565,12 +9815,46 @@ export default function App() {
                 </div>
               </div>
             ) : null}
+            <div className="action-row">
+              <button
+                className="primary-button"
+                data-tour="calculate-button"
+                disabled={isLoading || isParetoLoading}
+                onClick={() => void runCalculation()}
+                type="button"
+              >
+                {isLoading
+                  ? 'Računam ...'
+                  : calculationMode === 'demand_to_staff'
+                    ? 'Izračunaj potrebno zasedbo'
+                    : 'Izračunaj, kaj lahko naredimo'}
+              </button>
+              {calculationMode === 'staff_to_coverage' ? (
+                <button
+                  className="secondary-button"
+                  disabled={isLoading || isParetoLoading}
+                  onClick={() => void runParetoAnalysis()}
+                  type="button"
+                >
+                  {isParetoLoading ? 'Računam Pareto ...' : 'Primerjaj po številu ljudi (Pareto)'}
+                </button>
+              ) : null}
+              {pausedPayload ? (
+                <button className="secondary-button" disabled={isLoading || isParetoLoading} onClick={() => void resumePausedCalculation()} type="button">
+                  Nadaljuj izračun
+                </button>
+              ) : null}
+            </div>
             {timeLimitDecision ? (
               <TimeLimitDecisionPanel
                 key={`${timeLimitDecision.status.job_id}:${timeLimitDecision.reason}`}
                 decision={timeLimitDecision}
                 isBusy={isLoading || isParetoLoading}
                 onContinue={() => void continueAfterTimeLimit()}
+                onTryExtraPerson={() => void tryExtraPersonAfterTimeLimit()}
+                onTryLeaderSectorHours={(v1SectorLimit, v2SectorLimit) => (
+                  void tryLeaderSectorHoursAfterTimeLimit(v1SectorLimit, v2SectorLimit)
+                )}
                 onTryLeaderCrisis={(maxExceptionHours) => void tryLeaderCrisisAfterTimeLimit(maxExceptionHours)}
                 onTryOfficeFallback={(selectedOfficePool) => void tryOfficeFallbackAfterTimeLimit(selectedOfficePool)}
                 onTryEmergencyShift={(shiftCode) => void tryEmergencyShiftAfterTimeLimit(shiftCode)}
@@ -8614,26 +9898,6 @@ export default function App() {
             ) : null}
             {error ? <div className="error-box">{error}</div> : null}
             {paretoError ? <div className="error-box">{paretoError}</div> : null}
-            <div className="action-row">
-              <button className="primary-button" disabled={isLoading || isParetoLoading} onClick={() => void runCalculation()} type="button">
-                {isLoading ? 'Računam ...' : 'Izračunaj maksimalne sektorske ure'}
-              </button>
-              {calculationMode === 'staff_to_coverage' ? (
-                <button
-                  className="secondary-button"
-                  disabled={isLoading || isParetoLoading}
-                  onClick={() => void runParetoAnalysis()}
-                  type="button"
-                >
-                  {isParetoLoading ? 'Računam Pareto ...' : 'Pareto analiza ljudi'}
-                </button>
-              ) : null}
-              {pausedPayload ? (
-                <button className="secondary-button" disabled={isLoading || isParetoLoading} onClick={() => void resumePausedCalculation()} type="button">
-                  Nadaljuj izračun
-                </button>
-              ) : null}
-            </div>
           </section>
 
           <Results
@@ -8650,7 +9914,7 @@ export default function App() {
             targetDemand={effectiveSectorDemand}
             targetDemandLabel={activeDemandLabel}
             whatIfSummary={whatIfSummary}
-            onRunShiftWhatIf={(person, shift) => void runShiftWhatIf(person, shift)}
+            onRunShiftWhatIf={(changes) => void runShiftWhatIf(changes)}
             onImportResult={(importedResult) => {
               setResult(importedResult);
               setParetoResult(null);
@@ -8675,9 +9939,23 @@ export default function App() {
           duplicateWarning={configurationComparison?.duplicate_warning ?? null}
           isSaving={isSavingUserConfiguration}
           name={saveConfigurationName}
+          result={pendingSaveResult}
           onCancel={cancelSaveUserConfiguration}
           onConfirm={() => void confirmSaveUserConfiguration()}
           onNameChange={setSaveConfigurationName}
+        />
+      ) : null}
+      {isOnboardingOpen ? (
+        <KonfMakerOnboarding
+          onDismiss={rememberOnboardingCompletion}
+          onStartTour={startGuidedTour}
+        />
+      ) : null}
+      {guidedTourKind ? (
+        <GuidedTour
+          kind={guidedTourKind}
+          onClose={closeGuidedTour}
+          onRequestTab={setActiveTab}
         />
       ) : null}
     </main>

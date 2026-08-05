@@ -2,6 +2,7 @@ import type {
   CalculationJobStatus,
   CalculatorRequest,
   CalculatorResponse,
+  CalculatorSettings,
   ShiftRule,
   VirtualPerson,
 } from './types/calculator';
@@ -12,6 +13,57 @@ export type ContinuationDelta = {
   crisisHours: number;
   utilizationPercent: number;
 };
+
+export type ShiftWhatIfChange = {
+  person: VirtualPerson;
+  shift: string;
+};
+
+export const FULL_WHAT_IF_TIME_LIMIT_SECONDS = 600;
+
+export function fullWhatIfSolverSettings(settings: CalculatorSettings): CalculatorSettings {
+  return {
+    ...settings,
+    cp_sat_time_limit_seconds: FULL_WHAT_IF_TIME_LIMIT_SECONDS,
+    cp_sat_no_improvement_seconds: 0,
+  };
+}
+
+export function applyCurrentFmpSelection(
+  request: CalculatorRequest,
+  includeFmp: boolean,
+): CalculatorRequest {
+  if (includeFmp) {
+    return { ...request, include_fmp: true };
+  }
+  const isFmpRole = (role: string | null | undefined) => (role ?? '').trim().toUpperCase() === 'FMP';
+  return {
+    ...request,
+    include_fmp: false,
+    fixed_staff: request.fixed_staff.filter((person) => !isFmpRole(person.role)),
+    locked_staff: request.locked_staff.filter((person) => !isFmpRole(person.role)),
+  };
+}
+
+export function increasedLeaderSectorLimits(
+  v1SectorLimit: number,
+  v2SectorLimit: number,
+): { v1SectorLimit: number; v2SectorLimit: number } {
+  return {
+    v1SectorLimit: Math.min(24, Math.max(0, v1SectorLimit) + 1),
+    v2SectorLimit: Math.min(24, Math.max(0, v2SectorLimit) + 1),
+  };
+}
+
+export function selectedShiftWhatIfChanges(
+  people: VirtualPerson[],
+  selectedShiftByPerson: Record<string, string>,
+): ShiftWhatIfChange[] {
+  return people.flatMap((person) => {
+    const shift = selectedShiftByPerson[person.id];
+    return shift && shift !== person.shift ? [{ person, shift }] : [];
+  });
+}
 
 export function coverageIsProven(status: CalculationJobStatus): boolean {
   return status.solver_status === 'OPTIMAL' || status.solver_sector_gap_to_best_bound === 0;
@@ -37,6 +89,62 @@ export function resultUsesOffice(result: CalculatorResponse): boolean {
   return result.people.some(
     (person: VirtualPerson) => ['officer', 'office-pool'].includes(person.source) && person.sector_hours > 0,
   );
+}
+
+export function nextPeopleLimit(
+  request: CalculatorRequest,
+  result: CalculatorResponse,
+): number | null {
+  if (request.calculation_mode !== 'demand_to_staff') {
+    return null;
+  }
+  const currentLimit = Math.max(request.total_people, result.planned_people);
+  return currentLimit >= 80 ? null : Math.max(1, currentLimit + 1);
+}
+
+export function enablesOnlyAdditionalRegularShifts(
+  previous: CalculatorRequest,
+  next: CalculatorRequest,
+): boolean {
+  if (previous.settings.shifts.length !== next.settings.shifts.length) {
+    return false;
+  }
+
+  let enabledAnotherShift = false;
+  for (const previousShift of previous.settings.shifts) {
+    const nextShift = next.settings.shifts.find((shift) => shift.code === previousShift.code);
+    if (
+      !nextShift
+      || nextShift.start_hour !== previousShift.start_hour
+      || nextShift.duration_hours !== previousShift.duration_hours
+    ) {
+      return false;
+    }
+    const wasEnabled = previousShift.enabled !== false;
+    const isEnabled = nextShift.enabled !== false;
+    if (wasEnabled && !isEnabled) {
+      return false;
+    }
+    if (!wasEnabled && isEnabled) {
+      enabledAnotherShift = true;
+    }
+  }
+  if (!enabledAnotherShift) {
+    return false;
+  }
+
+  const comparable = (request: CalculatorRequest) => ({
+    ...request,
+    continuation_min_sector_hours: null,
+    solver_random_seed: 1,
+    warm_start: null,
+    warm_start_snapshot_id: null,
+    settings: {
+      ...request.settings,
+      shifts: request.settings.shifts.map((shift) => ({ ...shift, enabled: true })),
+    },
+  });
+  return JSON.stringify(comparable(previous)) === JSON.stringify(comparable(next));
 }
 
 function slotHour(slot: number): number {

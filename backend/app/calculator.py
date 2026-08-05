@@ -72,6 +72,8 @@ MANUAL_SEED_NO_IMPROVEMENT_SECONDS = 15
 COVERED_SECTOR_WEIGHT = 100_000_000
 SELECTED_PERSON_PENALTY = 10_000
 SELECTED_CAPACITY_PENALTY = 20
+SELECTED_SHIFT_HOUR_PENALTY = 20
+WARM_START_ROSTER_CHANGE_PENALTY = 2_000
 LICENSE_MIX_DEVIATION_PENALTY = 20
 SECTOR_PROFILE_CHOICE_PENALTY = 3_000
 OFFICER_SOURCE = "officer"
@@ -1031,11 +1033,15 @@ def add_fixed_staff_people(
     fixed_people = list(people)
     notes: list[str] = []
     active_shift_codes = enabled_regular_shift_codes(request)
-    skipped = 0
+    skipped_inactive = 0
+    skipped_fmp = 0
 
     for item in request.fixed_staff:
+        if not request.include_fmp and (item.role or "").strip().upper() == "FMP":
+            skipped_fmp += item.count
+            continue
         if item.shift not in active_shift_codes:
-            skipped += item.count
+            skipped_inactive += item.count
             continue
         for _ in range(item.count):
             fixed_people.append(
@@ -1050,11 +1056,13 @@ def add_fixed_staff_people(
             next_id += 1
 
     if request.fixed_staff:
-        total_fixed = sum(item.count for item in request.fixed_staff) - skipped
+        total_fixed = sum(item.count for item in request.fixed_staff) - skipped_inactive - skipped_fmp
         if total_fixed:
             notes.append(f"Uporabnik je dodal {total_fixed} fiksno vpisanih ljudi/izmen.")
-        if skipped:
-            notes.append(f"Preskočenih je {skipped} fiksno vpisanih ljudi, ker njihova izmena ni aktivna.")
+        if skipped_inactive:
+            notes.append(f"Preskočenih je {skipped_inactive} fiksno vpisanih ljudi, ker njihova izmena ni aktivna.")
+        if skipped_fmp:
+            notes.append(f"Preskočenih je {skipped_fmp} fiksnih FMP vnosov, ker FMP ni vključen.")
 
     return fixed_people, next_id, notes
 
@@ -1067,11 +1075,15 @@ def add_locked_staff_people(
     locked_people = list(people)
     notes: list[str] = []
     active_shift_codes = enabled_regular_shift_codes(request)
-    skipped = 0
+    skipped_inactive = 0
+    skipped_fmp = 0
 
     for item in request.locked_staff:
+        if not request.include_fmp and (item.role or "").strip().upper() == "FMP":
+            skipped_fmp += item.count
+            continue
         if item.shift not in active_shift_codes:
-            skipped += item.count
+            skipped_inactive += item.count
             continue
         for _ in range(item.count):
             locked_people.append(
@@ -1087,11 +1099,13 @@ def add_locked_staff_people(
             next_id += 1
 
     if request.locked_staff:
-        total_locked = sum(item.count for item in request.locked_staff) - skipped
+        total_locked = sum(item.count for item in request.locked_staff) - skipped_inactive - skipped_fmp
         if total_locked:
             notes.append(f"What-if je zaklenil {total_locked} človeka/ljudi v izbrano izmeno brez spremembe skupnega števila ljudi.")
-        if skipped:
-            notes.append(f"Preskočenih je {skipped} what-if zaklenjenih ljudi, ker njihova izmena ni aktivna.")
+        if skipped_inactive:
+            notes.append(f"Preskočenih je {skipped_inactive} what-if zaklenjenih ljudi, ker njihova izmena ni aktivna.")
+        if skipped_fmp:
+            notes.append(f"Preskočenih je {skipped_fmp} zaklenjenih FMP vnosov, ker FMP ni vključen.")
 
     return locked_people, next_id, notes
 
@@ -1483,6 +1497,94 @@ def compact_candidate_pool_for_people_limit(
             key=candidate_score,
         )
 
+    def select_candidate(index: int) -> None:
+        if index in selected_original_set:
+            return
+        selected_original_indexes.append(index)
+        selected_original_set.add(index)
+        license_name = candidates[index].license
+        selected_license_counts[license_name] += 1
+        if index in available_by_license[license_name]:
+            available_by_license[license_name].remove(index)
+
+    if request.warm_start_roster_priority > 0:
+        desired_roster = warm_start_roster_counts(request.warm_start)
+        for key, desired_count in desired_roster.items():
+            already_selected = sum(
+                1
+                for index in selected_original_indexes
+                if roster_key(
+                    candidates[index].license,
+                    candidates[index].shift,
+                    candidates[index].role,
+                    candidates[index].source,
+                ) == key
+            )
+            matching_candidates = [
+                index
+                for index, person in enumerate(candidates)
+                if index not in selected_original_set
+                and roster_key(person.license, person.shift, person.role, person.source) == key
+            ]
+            for index in sorted(matching_candidates, key=candidate_score)[:max(0, desired_count - already_selected)]:
+                if len(selected_original_indexes) >= target_pool_size:
+                    break
+                select_candidate(index)
+
+    def candidate_can_cover_slot(index: int, slot: int) -> bool:
+        person = candidates[index]
+        shift = shift_map.get(person.shift)
+        if shift is None or slot not in shift_slots(shift):
+            return False
+        if (
+            request.leader_exception_mode == "forbid"
+            and role_edge_exception_penalty(person, slot, shift_map) > 0
+        ):
+            return False
+        return True
+
+    def selected_slot_count(slot: int, licenses: set[str]) -> int:
+        return sum(
+            1
+            for index in selected_original_indexes
+            if candidates[index].license in licenses and candidate_can_cover_slot(index, slot)
+        )
+
+    def ensure_slot_candidates(slot: int, licenses: set[str], minimum_count: int) -> None:
+        while selected_slot_count(slot, licenses) < minimum_count:
+            options = [
+                index
+                for license_name in licenses
+                for index in available_by_license.get(license_name, [])
+                if candidate_can_cover_slot(index, slot)
+            ]
+            if not options:
+                return
+            select_candidate(
+                min(
+                    options,
+                    key=lambda index: (
+                        -max(0, license_need(candidates[index].license)),
+                        *candidate_score(index),
+                    ),
+                )
+            )
+
+    # A compact pool must still be viable at the edges of the requested profile.
+    # Ranking only by total shift demand used to fill the pool with central shifts
+    # (A9-A13) and could leave 07:00 or the late evening without enough candidates.
+    # That made adding an enabled shift change the effective feasible set even
+    # though the mathematical model had only gained options.
+    for slot, sector_count in enumerate(target_sector_counts):
+        if sector_count <= 0:
+            continue
+        if sector_count == 1:
+            ensure_slot_candidates(slot, {"FL"}, 2)
+            continue
+        ensure_slot_candidates(slot, {"FL", "APS"}, 2)
+        ensure_slot_candidates(slot, {"FL", "ACS"}, 2 * (sector_count - 1))
+        ensure_slot_candidates(slot, {"FL", "APS", "ACS"}, 2 * sector_count)
+
     while len(selected_original_indexes) < min(people_limit, len(candidates)):
         non_empty_licenses = [
             license_name
@@ -1501,10 +1603,8 @@ def compact_candidate_pool_for_people_limit(
                 non_empty_licenses,
                 key=lambda item: candidate_score(available_by_license[item][0]),
             )
-        selected_index = available_by_license[license_name].pop(0)
-        selected_original_indexes.append(selected_index)
-        selected_original_set.add(selected_index)
-        selected_license_counts[license_name] += 1
+        selected_index = available_by_license[license_name][0]
+        select_candidate(selected_index)
 
     backup_candidates = sorted(
         (
@@ -1520,8 +1620,7 @@ def compact_candidate_pool_for_people_limit(
     for index in backup_candidates:
         if len(selected_original_indexes) >= target_pool_size:
             break
-        selected_original_indexes.append(index)
-        selected_original_set.add(index)
+        select_candidate(index)
 
     compact_candidates = [candidates[index] for index in selected_original_indexes]
     compact_required_indexes = set(range(len(required_original_indexes)))
@@ -1571,8 +1670,13 @@ def candidate_pool_from_configuration(
     configuration: object,
     allowed_regular_shift_codes: set[str] | None = None,
     allowed_officer_shift_codes: set[str] | None = None,
+    include_fmp: bool = True,
 ) -> tuple[list[PersonState], set[int]]:
-    required_people = [candidates[index] for index in sorted(required_indexes)]
+    required_people = [
+        candidates[index]
+        for index in sorted(required_indexes)
+        if include_fmp or (candidates[index].role or "").strip().upper() != "FMP"
+    ]
 
     def seed_shift_is_allowed(shift: str, source: str) -> bool:
         if source == OFFICER_SOURCE:
@@ -1590,6 +1694,8 @@ def candidate_pool_from_configuration(
 
     def add_seed_people(count: int, license_name: str, shift: str, role: str | None, source: str) -> None:
         nonlocal next_seed_index
+        if not include_fmp and (role or "").strip().upper() == "FMP":
+            return
         if not seed_shift_is_allowed(shift, source):
             return
         for _ in range(max(0, count)):
@@ -1778,6 +1884,7 @@ def configuration_seed_candidate_pools(
             configuration,
             allowed_regular_shift_codes,
             allowed_officer_shift_codes,
+            include_fmp=request.include_fmp,
         )
         pools.append(
             (
@@ -1816,6 +1923,8 @@ def fixed_shift_total_caps(request: CalculatorRequest) -> dict[str, int]:
     caps: Counter[str] = Counter()
     active_shift_codes = enabled_regular_shift_codes(request)
     for item in request.fixed_staff:
+        if not request.include_fmp and (item.role or "").strip().upper() == "FMP":
+            continue
         if item.shift not in active_shift_codes:
             continue
         caps[item.shift] += item.count
@@ -1918,6 +2027,73 @@ def recommended_office_shift_summary(people: list[PersonState]) -> str | None:
         for (shift, license_name), count in sorted(counts.items())
     ]
     return "Priporočene operativne office izmene: " + ", ".join(parts) + "."
+
+
+RosterKey = tuple[str, str, str | None, str]
+
+
+def warm_start_source_group(source: str | None) -> str:
+    if source in {OFFICER_SOURCE, OFFICE_POOL_SOURCE}:
+        return "office"
+    if source in {FIXED_SOURCE, WHAT_IF_SOURCE}:
+        return "fixed"
+    return REGULAR_SOURCE
+
+
+def roster_key(
+    license_name: str,
+    shift: str,
+    role: str | None,
+    source: str | None,
+) -> RosterKey | None:
+    source_group = warm_start_source_group(source)
+    if source_group == "office":
+        return None
+    cleaned_role = (role or "").strip().upper() or None
+    normalized_shift = "A21" if cleaned_role == "V3" and shift in {"V3", "A21"} else shift
+    return license_name, normalized_shift, cleaned_role, source_group
+
+
+def warm_start_roster_counts(warm_start: dict[str, object] | None) -> Counter[RosterKey]:
+    counts: Counter[RosterKey] = Counter()
+    if not isinstance(warm_start, dict):
+        return counts
+    raw_people = warm_start.get("people")
+    if not isinstance(raw_people, list):
+        return counts
+    for raw_person in raw_people:
+        if not isinstance(raw_person, dict):
+            continue
+        key = roster_key(
+            str(raw_person.get("license") or "").strip(),
+            str(raw_person.get("shift") or "").strip(),
+            str(raw_person.get("role")).strip() if raw_person.get("role") is not None else None,
+            str(raw_person.get("source") or REGULAR_SOURCE),
+        )
+        if key is not None and key[0] and key[1]:
+            counts[key] += 1
+    return counts
+
+
+def selected_roster_counts(people: list[PersonState]) -> Counter[RosterKey]:
+    counts: Counter[RosterKey] = Counter()
+    for person in people:
+        key = roster_key(person.license, person.shift, person.role, person.source)
+        if key is not None:
+            counts[key] += 1
+    return counts
+
+
+def roster_retention_summary(
+    people: list[PersonState],
+    warm_start: dict[str, object] | None,
+) -> tuple[int, int] | None:
+    previous = warm_start_roster_counts(warm_start)
+    if not previous:
+        return None
+    current = selected_roster_counts(people)
+    retained = sum(min(count, current[key]) for key, count in previous.items())
+    return retained, sum(previous.values())
 
 
 def solve_schedule_with_cp_sat(
@@ -2190,6 +2366,18 @@ def solve_schedule_with_cp_sat(
         model.Add(covered_sector_count >= min(requested_sector_hours, coverage_floor))
     selected_count = sum(selected.values())
     selected_capacity = sum(capacity_by_candidate[index] * selected[index] for index in range(len(candidates)))
+    shift_duration_by_candidate = {
+        index: (
+            shift_map[person.shift].duration_hours
+            if person.shift in shift_map
+            else max(1, capacity_by_candidate[index])
+        )
+        for index, person in enumerate(candidates)
+    }
+    selected_shift_hours = sum(
+        shift_duration_by_candidate[index] * selected[index]
+        for index in range(len(candidates))
+    )
     officer_candidate_count = sum(1 for person in candidates if is_officer(person))
     officer_selected_count = sum(
         selected[index]
@@ -2223,9 +2411,47 @@ def solve_schedule_with_cp_sat(
             )
             license_mix_penalty_terms.append(deviation * LICENSE_MIX_DEVIATION_PENALTY)
 
+    roster_change_priority = request.warm_start_roster_priority
+    previous_roster_counts = warm_start_roster_counts(request.warm_start)
+    candidate_indexes_by_roster: dict[RosterKey, list[int]] = defaultdict(list)
+    if roster_change_priority > 0 and previous_roster_counts:
+        for index, person in enumerate(candidates):
+            key = roster_key(person.license, person.shift, person.role, person.source)
+            if key is not None:
+                candidate_indexes_by_roster[key].append(index)
+
+    roster_change_penalty_terms: list[cp_model.LinearExpr] = []
+    roster_change_penalty_ceiling = 0
+    roster_keys = sorted(
+        set(previous_roster_counts) | set(candidate_indexes_by_roster),
+        key=lambda item: tuple(str(part or "") for part in item),
+    )
+    for group_index, key in enumerate(roster_keys):
+        candidate_indexes = candidate_indexes_by_roster.get(key, [])
+        previous_count = previous_roster_counts.get(key, 0)
+        maximum_deviation = max(1, len(candidate_indexes) + previous_count)
+        deviation = model.NewIntVar(0, maximum_deviation, f"warm_roster_deviation_{group_index}")
+        model.AddAbsEquality(
+            deviation,
+            sum(selected[index] for index in candidate_indexes) - previous_count,
+        )
+        weighted_penalty = WARM_START_ROSTER_CHANGE_PENALTY * roster_change_priority
+        roster_change_penalty_terms.append(deviation * weighted_penalty)
+        roster_change_penalty_ceiling += maximum_deviation * weighted_penalty
+
     assignment_penalty = sum(assignment_penalty_terms) if assignment_penalty_terms else 0
     profile_choice_penalty = sum(profile_choice_penalty_terms) if profile_choice_penalty_terms else 0
     license_mix_penalty = sum(license_mix_penalty_terms) if license_mix_penalty_terms else 0
+    coverage_priority = max(1, request.settings.coverage_priority)
+    license_mix_priority = request.settings.license_mix_priority
+    short_shift_priority = request.settings.short_shift_priority
+    weighted_license_mix_penalty = license_mix_penalty * license_mix_priority
+    short_shift_penalty = (
+        selected_shift_hours
+        * short_shift_priority
+        * SELECTED_SHIFT_HOUR_PENALTY
+    )
+    roster_change_penalty = sum(roster_change_penalty_terms) if roster_change_penalty_terms else 0
     fmp_leader_overlap_penalty_value = (
         sum(fmp_leader_overlap_penalty_terms)
         if fmp_leader_overlap_penalty_terms
@@ -2241,15 +2467,22 @@ def solve_schedule_with_cp_sat(
         * 2
         * len(("FL", "APS", "ACS"))
         * LICENSE_MIX_DEVIATION_PENALTY
+        * license_mix_priority
+        + sum(shift_duration_by_candidate.values())
+        * short_shift_priority
+        * SELECTED_SHIFT_HOUR_PENALTY
         + profile_choice_penalty_ceiling
         + fmp_leader_overlap_penalty_ceiling
+        + roster_change_penalty_ceiling
     )
     base_objective = (
-        covered_sector_count * COVERED_SECTOR_WEIGHT
+        covered_sector_count * COVERED_SECTOR_WEIGHT * coverage_priority
         - officer_selected_count * OFFICER_SELECTED_PENALTY
         - selected_count * SELECTED_PERSON_PENALTY
         - selected_capacity * SELECTED_CAPACITY_PENALTY
-        - license_mix_penalty
+        - weighted_license_mix_penalty
+        - short_shift_penalty
+        - roster_change_penalty
         - profile_choice_penalty
         - fmp_leader_overlap_penalty_value
         - assignment_penalty
@@ -2266,19 +2499,12 @@ def solve_schedule_with_cp_sat(
         + final_license_preference_ceiling
     )
     coverage_objective_weight = (
-        COVERED_SECTOR_WEIGHT * final_tie_break_multiplier
+        COVERED_SECTOR_WEIGHT * coverage_priority * final_tie_break_multiplier
     )
     model.Maximize(
         base_objective * final_tie_break_multiplier
         - final_license_preference_penalty
     )
-
-    def warm_start_source_group(source: str | None) -> str:
-        if source in {OFFICER_SOURCE, OFFICE_POOL_SOURCE}:
-            return "office"
-        if source in {FIXED_SOURCE, WHAT_IF_SOURCE}:
-            return "fixed"
-        return REGULAR_SOURCE
 
     def add_warm_start_hints() -> None:
         warm_start = request.warm_start
@@ -2316,7 +2542,10 @@ def solve_schedule_with_cp_sat(
             for index, person in enumerate(candidates):
                 if index in used_candidate_indexes:
                     continue
-                if person.license != license_name or person.shift != shift_code or person.role != role_name:
+                shift_matches = person.shift == shift_code or (
+                    role_name == "V3" and shift_code == "A21" and person.shift == "V3"
+                )
+                if person.license != license_name or not shift_matches or person.role != role_name:
                     continue
                 if warm_start_source_group(person.source) == source_group:
                     exact_match = index
@@ -2982,7 +3211,22 @@ def calculate_demand_to_staff(
 ) -> CalculatorResponse:
     if can_use_pattern_minimum_core(request):
         try:
-            return calculate_pattern_minimum(request, progress_callback, cancel_callback)
+            exact_response = calculate_pattern_minimum(request, progress_callback, cancel_callback)
+            if exact_response.feasible or request.total_people <= 0:
+                return exact_response
+
+            # A capped exact-cover search may prove that the full request is
+            # impossible. Continue with the regular optimizer in that case so
+            # the user still receives the best partial coverage and can use
+            # the +1 person / office continuation actions.
+            report_phase_progress(
+                progress_callback,
+                20,
+                "preparation",
+                "Polna odprtost ni izvedljiva pri trenutnem limitu",
+                "Exact-cover preverjanje ni našlo celotne zahtevane odprtosti; iščem najboljši delni rezultat.",
+                "Po koncu lahko dodaš +1 osebo ali uporabiš druge nadzorovane razširitve.",
+            )
         except PatternSearchCancelled as exc:
             raise CalculationCancelled(str(exc)) from exc
 
@@ -3252,15 +3496,19 @@ def calculate_demand_to_staff(
             and solved[0].total_hours >= requested_sector_hours
             and feasibility_polish_candidates is not None
             and feasibility_polish_required_indexes is not None
-            and (license_target_counts is not None or request.prefer_minimal_fl)
+            and (
+                license_target_counts is not None
+                or request.prefer_minimal_fl
+                or request.settings.short_shift_priority > 0
+            )
         ):
             report_phase_progress(
                 progress_callback,
                 58,
                 "regular_polish",
                 "Redna faza: poliranje licenčne sestave",
-                "Poliram polno pokrit people-limit razpored po licenčni sestavi.",
-                "Pokritost je že najdena; zdaj se ureja kakovost licenčne sestave.",
+                "Poliram polno pokrit people-limit razpored po licencah in trajanju izmen.",
+                "Pokritost je že najdena; zdaj se med drugim daje prednost krajšim izmenam.",
             )
             polished = solve_schedule_with_cp_sat(
                 feasibility_polish_candidates,
@@ -3283,7 +3531,7 @@ def calculate_demand_to_staff(
 
     regular_solution_hours = solved[0].total_hours if solved is not None else regular_solution_hours
 
-    if solved is None and not force_office_fallback:
+    if (solved is None or solved[0].total_hours < requested_sector_hours) and not force_office_fallback:
         report_phase_progress(
             progress_callback,
             62,
@@ -3292,7 +3540,7 @@ def calculate_demand_to_staff(
             "CP-SAT maksimizira pokritost, število ljudi in izkoriščenost brez operativnega office poola.",
             "Če se čas izteče in ni dokazano, da je to konec, bo uporabnik izbral naslednji korak.",
         )
-        solved = solve_schedule_with_cp_sat(
+        full_pool_solved = solve_schedule_with_cp_sat(
             people,
             required_indexes,
             request,
@@ -3306,6 +3554,10 @@ def calculate_demand_to_staff(
             solution_callback=publish_incumbent,
             cancel_callback=cancel_callback,
         )
+        if full_pool_solved is not None and (
+            solved is None or full_pool_solved[0].total_hours >= solved[0].total_hours
+        ):
+            solved = full_pool_solved
         regular_solution_hours = solved[0].total_hours if solved is not None else regular_solution_hours
     elif force_office_fallback:
         report_phase_progress(
@@ -3419,6 +3671,18 @@ def calculate_demand_to_staff(
             notes.append(f"Prvi polno pokrit people-limit razpored je bil najden s seed bazo {feasibility_seed_name}.")
     elif feasibility_attempted:
         notes.append("Feasibility faza ni našla polne pokritosti v dodeljenem času, zato je model prešel na maksimizacijo pokritosti.")
+    if request.settings.short_shift_priority > 0:
+        notes.append(
+            "Po doseženi pokritosti model nadaljuje optimizacijo trajanja izmen; "
+            f"utež krajših izmen je {request.settings.short_shift_priority}/100."
+        )
+    retention = roster_retention_summary(scheduled.people, request.warm_start)
+    if request.warm_start_roster_priority > 0 and retention is not None:
+        retained, previous_total = retention
+        notes.append(
+            f"Stabilnost sestave: v isti licenci, vlogi in izmeni je ostalo {retained}/{previous_total} "
+            f"obstoječih rednih mest; spremenjenih je {previous_total - retained}."
+        )
 
     if has_percent_license_mix:
         notes.append(
@@ -3808,6 +4072,18 @@ def calculate(
         else:
             notes.append("Operativni office pool ni bil uporabljen, ker redne možnosti že pokrijejo zahtevano odprtost.")
     notes.append("Pri enaki pokritosti CP-SAT izbere zasedbo z manj neizkoriščene kapacitete izmen.")
+    if request.settings.short_shift_priority > 0:
+        notes.append(
+            "Po doseženi pokritosti model nadaljuje optimizacijo trajanja izmen; "
+            f"utež krajših izmen je {request.settings.short_shift_priority}/100."
+        )
+    retention = roster_retention_summary(scheduled.people, request.warm_start)
+    if request.warm_start_roster_priority > 0 and retention is not None:
+        retained, previous_total = retention
+        notes.append(
+            f"Stabilnost sestave: v isti licenci, vlogi in izmeni je ostalo {retained}/{previous_total} "
+            f"obstoječih rednih mest; spremenjenih je {previous_total - retained}."
+        )
     notes.append(f"Status CP-SAT rešitve: {solver_snapshot.status}.")
     if solver_snapshot.stop_reason:
         notes.append(f"Politika izračuna je samodejno ustavila CP-SAT: {solver_snapshot.stop_reason}.")

@@ -21,6 +21,9 @@ class CalculatorSettings(BaseModel):
     cp_sat_no_improvement_seconds: int = Field(default=180, ge=0, le=7200)
     cp_sat_acceptable_sector_gap: int = Field(default=0, ge=0, le=100)
     cp_sat_min_auto_stop_coverage_percent: int = Field(default=95, ge=0, le=100)
+    coverage_priority: int = Field(default=100, ge=0, le=100)
+    license_mix_priority: int = Field(default=25, ge=0, le=100)
+    short_shift_priority: int = Field(default=100, ge=0, le=100)
     include_required_shift_leaders: bool = True
     include_night_fl_requirement: bool = DEFAULT_INCLUDE_NIGHT_FL_REQUIREMENT
     required_night_fl_count: int = Field(default=DEFAULT_REQUIRED_NIGHT_FL_COUNT, ge=0, le=10)
@@ -144,6 +147,7 @@ class CalculatorRequest(BaseModel):
     leader_exception_mode: str = "forbid"
     max_leader_exception_hours: int = Field(default=0, ge=0, le=48)
     continuation_min_sector_hours: int | None = Field(default=None, ge=0, le=192)
+    warm_start_roster_priority: int = Field(default=0, ge=0, le=100)
     solver_random_seed: int = Field(default=1, ge=1, le=2_147_483_647)
     preferred_manual_configuration_id: str | None = None
     warm_start: dict[str, object] | None = None
@@ -306,16 +310,62 @@ class CalculatorResponse(BaseModel):
     warnings: list[str]
 
 
+class CalculatorWorkbookRequest(BaseModel):
+    result: CalculatorResponse
+    name: str | None = None
+    target_demand: list[int] | None = None
+    shifts: list[ShiftRule] = Field(default_factory=list)
+
+    @field_validator("name")
+    @classmethod
+    def blank_name_is_none(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+    @field_validator("target_demand")
+    @classmethod
+    def target_demand_has_24_valid_hours(cls, value: list[int] | None) -> list[int] | None:
+        if value is None:
+            return None
+        if len(value) != 24:
+            raise ValueError("Excel izvoz potrebuje 24 urnih ciljnih vrednosti.")
+        if any(count < 0 or count > 8 for count in value):
+            raise ValueError("Urni cilj v Excel izvozu mora biti med 0 in 8 sektorji.")
+        return value
+
+
 class SaveUserConfigurationRequest(BaseModel):
     name: str | None = None
     result: CalculatorResponse
     note: str | None = None
 
 
+class UpdateUserConfigurationRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    note: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("name")
+    @classmethod
+    def clean_required_name(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Ime uporabniške konfiguracije ne sme biti prazno.")
+        return cleaned
+
+    @field_validator("note")
+    @classmethod
+    def clean_optional_note(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip() or None
+
+
 class CompleteConfigurationRequest(BaseModel):
     request: CalculatorRequest
     current_result: CalculatorResponse | None = None
-    time_limit_seconds: int = Field(default=8, ge=1, le=120)
+    time_limit_seconds: int = Field(default=180, ge=1, le=600)
 
 
 class ManualConfigurationOneDownRequest(BaseModel):
