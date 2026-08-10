@@ -1,4 +1,4 @@
-"""Entry point used by the packaged KonfMaker desktop engine."""
+"""Entry point used by the packaged ATCConfMaker desktop engine."""
 
 from __future__ import annotations
 

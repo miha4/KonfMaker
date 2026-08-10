@@ -54,18 +54,21 @@ function findDevPython() {
 }
 
 function packagedEnginePath() {
-  const binaryName = process.platform === 'win32' ? 'konfmaker-engine.exe' : 'konfmaker-engine';
+  const binaryName = process.platform === 'win32' ? 'atcconfmaker-engine.exe' : 'atcconfmaker-engine';
   return appResourcePath('backend', binaryName);
 }
 
 function backendEnvironment() {
   const userDataDir = app.getPath('userData');
+  const legacyUserDataDir = path.join(app.getPath('appData'), 'KonfMaker');
   const userConfigPath = path.join(userDataDir, 'user_configurations.json');
   const patternCachePath = path.join(userDataDir, 'pattern-cache', 'patterns.json');
   const workbookPath = appResourcePath('data', 'Konfiguracije OKZP.xlsx');
   const configCsvPath = appResourcePath('data', 'konfiguracije_okzp_obogateno_vlimiti.csv');
 
+  copyIfMissing(path.join(legacyUserDataDir, 'user_configurations.json'), userConfigPath);
   copyIfMissing(appResourcePath('data', 'user_configurations.json'), userConfigPath);
+  copyIfMissing(path.join(legacyUserDataDir, 'pattern-cache', 'patterns.json'), patternCachePath);
   fs.mkdirSync(path.dirname(patternCachePath), { recursive: true });
 
   return {
@@ -89,7 +92,7 @@ function startBackend() {
   if (app.isPackaged) {
     const enginePath = packagedEnginePath();
     if (!fileExists(enginePath)) {
-      throw new Error(`Zapakiran KonfMaker engine ni najden: ${enginePath}`);
+      throw new Error(`Zapakiran ATCConfMaker engine ni najden: ${enginePath}`);
     }
     backendProcess = spawn(enginePath, [], {
       cwd: path.dirname(enginePath),
@@ -115,10 +118,10 @@ function startBackend() {
 
   const child = backendProcess;
   backendProcess.stdout?.on('data', (chunk) => {
-    process.stdout.write(`[konfmaker-engine] ${chunk}`);
+    process.stdout.write(`[atcconfmaker-engine] ${chunk}`);
   });
   backendProcess.stderr?.on('data', (chunk) => {
-    process.stderr.write(`[konfmaker-engine] ${chunk}`);
+    process.stderr.write(`[atcconfmaker-engine] ${chunk}`);
   });
   backendProcess.on('exit', (code, signal) => {
     if (backendProcess === child) {
@@ -126,7 +129,7 @@ function startBackend() {
       backendShutdownComplete = true;
     }
     if (!app.isQuitting) {
-      console.error(`KonfMaker engine se je ustavil. code=${code} signal=${signal}`);
+      console.error(`ATCConfMaker engine se je ustavil. code=${code} signal=${signal}`);
     }
   });
 }
@@ -261,7 +264,7 @@ function startupHtml(title, detail) {
     <html lang="sl">
       <head>
         <meta charset="utf-8" />
-        <title>KonfMaker</title>
+        <title>ATCConfMaker</title>
         <style>
           body {
             margin: 0;
@@ -338,7 +341,7 @@ function createWindow() {
     }
   });
 
-  mainWindow.loadURL(startupHtml('Zaganjam KonfMaker', 'Lokalni optimizacijski engine se pripravlja. To običajno traja nekaj sekund.'));
+  mainWindow.loadURL(startupHtml('Zaganjam ATCConfMaker', 'Lokalni optimizacijski engine se pripravlja. To običajno traja nekaj sekund.'));
   return mainWindow;
 }
 
@@ -366,14 +369,18 @@ async function showStartupError(error) {
   const message = error instanceof Error ? error.message : String(error);
   await dialog.showMessageBox(mainWindow, {
     type: 'error',
-    title: 'KonfMaker se ni zagnal',
+    title: 'ATCConfMaker se ni zagnal',
     message: 'Lokalni engine se ni zagnal.',
     detail: message,
   });
 
   if (mainWindow) {
-    mainWindow.loadURL(startupHtml('KonfMaker se ni zagnal', message));
+    mainWindow.loadURL(startupHtml('ATCConfMaker se ni zagnal', message));
   }
+}
+
+if (process.platform === 'win32') {
+  app.setAppUserModelId('si.atcconfmaker.desktop');
 }
 
 const gotLock = app.requestSingleInstanceLock();

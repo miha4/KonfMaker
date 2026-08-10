@@ -151,7 +151,7 @@ function main() {
     '--noconfirm',
     '--onefile',
     '--name',
-    'konfmaker-engine',
+    'atcconfmaker-engine',
     '--paths',
     BACKEND_DIR,
     '--collect-all',

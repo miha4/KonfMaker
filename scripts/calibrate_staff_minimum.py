@@ -18,7 +18,7 @@ from app.config_library import FOCUS_CONFIGURATION_NAMES  # noqa: E402
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Primerja ročno število ljudi z minimalnim številom ljudi, ki ga najde KonfMaker.",
+        description="Primerja ročno število ljudi z minimalnim številom ljudi, ki ga najde ATCConfMaker.",
     )
     parser.add_argument(
         "--time-limit",

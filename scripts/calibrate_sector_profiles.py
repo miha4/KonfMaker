@@ -17,7 +17,7 @@ from app.calibration import run_sector_profile_calibration  # noqa: E402
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Primerja ročne Excel konfiguracije s trenutnim KonfMaker modelom in predlaga sektor profile.",
+        description="Primerja ročne Excel konfiguracije s trenutnim ATCConfMaker modelom in predlaga sektor profile.",
     )
     parser.add_argument(
         "--time-limit",

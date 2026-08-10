@@ -17,6 +17,7 @@ backend/build/
 backend/dist/
 release/
 konfmaker-engine.spec
+atcconfmaker-engine.spec
 download-site/downloads/
 
 # OS / editors

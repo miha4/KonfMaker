@@ -1,6 +1,6 @@
-# KonfMaker Desktop
+# ATCConfMaker Desktop
 
-KonfMaker desktop uporablja isti React frontend in isti FastAPI backend kot razvojna spletna verzija. Electron samo zapakira uporabniški vmesnik in lokalno zažene Python engine.
+ATCConfMaker desktop uporablja isti React frontend in isti FastAPI backend kot razvojna spletna verzija. Electron samo zapakira uporabniški vmesnik in lokalno zažene Python engine.
 
 ## Razvojni zagon
 
@@ -21,7 +21,7 @@ npm run desktop:dev
 npm run desktop:build:mac
 ```
 
-Ta ukaz najprej zgradi Python sidecar `backend/dist/konfmaker-engine`, nato React frontend in nato Electron `.dmg`/`.zip` v mapi `release/`.
+Ta ukaz najprej zgradi Python sidecar `backend/dist/atcconfmaker-engine`, nato React frontend in nato Electron `.dmg`/`.zip` v mapi `release/`.
 
 ## Windows paket
 
@@ -29,7 +29,14 @@ Ta ukaz najprej zgradi Python sidecar `backend/dist/konfmaker-engine`, nato Reac
 npm run desktop:build:win
 ```
 
-Windows build poženi na Windows računalniku ali Windows CI okolju, ker mora PyInstaller zgraditi Windows `konfmaker-engine.exe`. Build iz macOS okolja ni dovolj, ker bi dobil macOS Python sidecar.
+Ukaz ustvari dve različici:
+
+- `ATCConfMaker-portable-<verzija>.exe`: ena prenosljiva datoteka brez namestitve,
+- `ATCConfMaker-Setup-<verzija>.exe`: klasični namestitveni program.
+
+Portable datoteka se zažene neposredno. Electron in Pythonov sidecar se med zagonom samodejno odpakirata v začasno Windows mapo; uporabniku ni treba ničesar ročno razpakirati ali namestiti.
+
+Windows build poženi na Windows računalniku ali Windows CI okolju, ker mora PyInstaller zgraditi Windows `atcconfmaker-engine.exe`. Build iz macOS okolja ni dovolj, ker bi dobil macOS Python sidecar.
 Zaradi tega `npm run desktop:build:win` na macOS/Linux namenoma prekine z razlago.
 
 Pripravljen je tudi ročni GitHub Actions workflow:
@@ -38,12 +45,12 @@ Pripravljen je tudi ročni GitHub Actions workflow:
 2. Odpri `Actions`.
 3. Izberi `Build Windows Desktop`.
 4. Klikni `Run workflow`.
-5. Po koncu prenesi artifact `konfmaker-windows`.
+5. Po koncu prenesi artifact `atcconfmaker-windows`.
 
-Workflow ustvari installer in ga prekopira tudi na stabilno pot za download stran:
+Workflow ustvari oba paketa in ju prekopira na stabilni poti za download stran:
 
-- `download-site/downloads/KonfMaker-windows.exe`
-- `download-site/downloads/KonfMaker-windows.zip`, če ga `electron-builder` ustvari
+- `download-site/downloads/ATCConfMaker-windows.exe` (portable, brez namestitve)
+- `download-site/downloads/ATCConfMaker-windows-setup.exe` (installer)
 
 ## Arnes download stran
 
@@ -51,8 +58,9 @@ Mapa `download-site/` je statična stran za prenos. Na Arnes FTP jo lahko nalož
 
 Predvideni imeni paketov:
 
-- `downloads/KonfMaker-mac.dmg`
-- `downloads/KonfMaker-windows.exe`
+- `downloads/ATCConfMaker-mac.dmg`
+- `downloads/ATCConfMaker-windows.exe` (privzeti portable prenos)
+- `downloads/ATCConfMaker-windows-setup.exe` (dodatni installer)
 
 ## Podatki v desktop aplikaciji
 

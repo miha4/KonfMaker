@@ -1,6 +1,6 @@
-# KonfMaker
+# ATCConfMaker
 
-KonfMaker is a web-based planning prototype for calculating maximum sector hours for an ATC daily configuration.
+ATCConfMaker is a web-based planning prototype for calculating maximum sector hours for an ATC daily configuration.
 
 ## Stack
 

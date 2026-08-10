@@ -50,7 +50,7 @@ from .models import (
 from .pattern_core import pattern_library_profile
 from .result_workbook import build_result_workbook
 
-app = FastAPI(title="KonfMaker API", version="0.1.0")
+app = FastAPI(title="ATCConfMaker API", version="0.1.0")
 
 
 class FocusCalibrationRequest(BaseModel):
@@ -115,7 +115,7 @@ def export_calculator_result(request: CalculatorWorkbookRequest):
     return Response(
         content=content,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": 'attachment; filename="konfmaker_konfiguracija.xlsx"'},
+        headers={"Content-Disposition": 'attachment; filename="atcconfmaker_konfiguracija.xlsx"'},
     )
 
 
@@ -263,7 +263,7 @@ def export_uploaded_model_analysis(request: WorkbookPayload):
     return Response(
         content=content,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": 'attachment; filename="konfmaker_model_analysis.xlsx"'},
+        headers={"Content-Disposition": 'attachment; filename="atcconfmaker_model_analysis.xlsx"'},
     )
 
 

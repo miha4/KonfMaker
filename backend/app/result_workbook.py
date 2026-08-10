@@ -397,7 +397,7 @@ def configuration_sheet(
     targets = request.target_demand or [hour.open_sectors for hour in result.hourly_coverage]
 
     rows: list[list[Any]] = [
-        [cell(f"KonfMaker · {request.name or 'Konfiguracija'}", STYLE_TITLE)],
+        [cell(f"ATCConfMaker · {request.name or 'Konfiguracija'}", STYLE_TITLE)],
         [
             cell("Status", STYLE_LABEL),
             cell(status_label, status_style),
@@ -797,7 +797,7 @@ def summary_sheet(
     result = request.result
     status_label, status_style = result_status(request)
     rows: list[list[Any]] = [
-        [cell(f"KonfMaker · {request.name or 'Konfiguracija'}", STYLE_TITLE)],
+        [cell(f"ATCConfMaker · {request.name or 'Konfiguracija'}", STYLE_TITLE)],
         [cell("IZID", STYLE_SECTION)],
         [cell("Status", STYLE_LABEL), cell(status_label, status_style)],
         [cell("Najdene sektorske ure", STYLE_LABEL), cell(result.max_sector_hours, STYLE_ACCENT)],
@@ -1054,8 +1054,8 @@ def package_workbook(
         'xmlns:dcterms="http://purl.org/dc/terms/" '
         'xmlns:dcmitype="http://purl.org/dc/dcmitype/" '
         'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'
-        '<dc:creator>KonfMaker</dc:creator>'
-        '<cp:lastModifiedBy>KonfMaker</cp:lastModifiedBy>'
+        '<dc:creator>ATCConfMaker</dc:creator>'
+        '<cp:lastModifiedBy>ATCConfMaker</cp:lastModifiedBy>'
         f'<dcterms:created xsi:type="dcterms:W3CDTF">{created}</dcterms:created>'
         f'<dcterms:modified xsi:type="dcterms:W3CDTF">{created}</dcterms:modified>'
         "</cp:coreProperties>"
@@ -1064,7 +1064,7 @@ def package_workbook(
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" '
         'xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">'
-        '<Application>KonfMaker</Application>'
+        '<Application>ATCConfMaker</Application>'
         f'<HeadingPairs><vt:vector size="2" baseType="variant"><vt:variant><vt:lpstr>Worksheets</vt:lpstr>'
         f'</vt:variant><vt:variant><vt:i4>{len(sheets)}</vt:i4></vt:variant></vt:vector></HeadingPairs>'
         f'<TitlesOfParts><vt:vector size="{len(sheets)}" baseType="lpstr">'

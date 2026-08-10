@@ -1104,7 +1104,7 @@ export default function ModelAnalysis({
       const link = document.createElement('a');
       const safeName = fileName.replace(/\.[^.]+$/, '').replace(/[^\w.-]+/g, '_');
       link.href = url;
-      link.download = `${safeName || 'konfmaker'}_model_analysis.xlsx`;
+      link.download = `${safeName || 'atcconfmaker'}_model_analysis.xlsx`;
       document.body.appendChild(link);
       link.click();
       link.remove();

@@ -35,18 +35,19 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path download-site/downloads | Out-Null
-          $setup = Get-ChildItem release -Filter "*.exe" | Sort-Object Length -Descending | Select-Object -First 1
+          $setup = Get-ChildItem release -Filter "ATCConfMaker-Setup-*.exe" | Select-Object -First 1
           if (-not $setup) { throw "Windows installer .exe was not created." }
-          Copy-Item $setup.FullName download-site/downloads/KonfMaker-windows.exe -Force
-          $zip = Get-ChildItem release -Filter "*win*.zip" | Sort-Object Length -Descending | Select-Object -First 1
-          if ($zip) { Copy-Item $zip.FullName download-site/downloads/KonfMaker-windows.zip -Force }
+          $portable = Get-ChildItem release -Filter "ATCConfMaker-portable-*.exe" | Select-Object -First 1
+          if (-not $portable) { throw "Windows portable .exe was not created." }
+          Copy-Item $portable.FullName download-site/downloads/ATCConfMaker-windows.exe -Force
+          Copy-Item $setup.FullName download-site/downloads/ATCConfMaker-windows-setup.exe -Force
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: konfmaker-windows
+          name: atcconfmaker-windows
+          if-no-files-found: error
+          compression-level: 0
           path: |
-            release/*.exe
-            release/*win*.zip
-            download-site/downloads/KonfMaker-windows.exe
-            download-site/downloads/KonfMaker-windows.zip
+            download-site/downloads/ATCConfMaker-windows.exe
+            download-site/downloads/ATCConfMaker-windows-setup.exe

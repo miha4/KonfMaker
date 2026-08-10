@@ -1,8 +1,8 @@
 {
-  "name": "konfmaker",
+  "name": "atcconfmaker",
   "version": "0.1.0",
   "private": true,
-  "description": "KonfMaker desktop and web calculator.",
+  "description": "ATCConfMaker desktop and web calculator.",
   "main": "electron/main.cjs",
   "scripts": {
     "start": "./scripts/start-dev.sh",
@@ -21,8 +21,8 @@
     "electron-builder": "^25.1.8"
   },
   "build": {
-    "appId": "si.konfmaker.desktop",
-    "productName": "KonfMaker",
+    "appId": "si.atcconfmaker.desktop",
+    "productName": "ATCConfMaker",
     "directories": {
       "output": "release"
     },
@@ -39,7 +39,7 @@
         "from": "backend/dist",
         "to": "backend",
         "filter": [
-          "konfmaker-engine*"
+          "atcconfmaker-engine*"
         ]
       },
       {
@@ -67,8 +67,14 @@
       "icon": "build/icon.ico",
       "target": [
         "nsis",
-        "zip"
+        "portable"
       ]
+    },
+    "nsis": {
+      "artifactName": "ATCConfMaker-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "ATCConfMaker-portable-${version}.${ext}"
     }
   }
 }

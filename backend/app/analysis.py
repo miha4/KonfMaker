@@ -2598,7 +2598,7 @@ def metric_block(title: str, metric_set: dict[str, Any]) -> list[list[Any]]:
 
 def summary_sheet_rows(result: dict[str, Any], source_file_name: str, params: AnalysisParams) -> list[list[Any]]:
     rows: list[list[Any]] = [
-        style_row(["KonfMaker model - povzetek", ""], 2),
+        style_row(["ATCConfMaker model - povzetek", ""], 2),
         ["Vir", source_file_name],
         ["Testno leto", params.test_year],
         ["Leta za fit", ", ".join(str(year) for year in params.fit_years)],
@@ -3030,8 +3030,8 @@ def build_analysis_workbook(
         'xmlns:dcterms="http://purl.org/dc/terms/" '
         'xmlns:dcmitype="http://purl.org/dc/dcmitype/" '
         'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'
-        '<dc:creator>KonfMaker</dc:creator>'
-        '<cp:lastModifiedBy>KonfMaker</cp:lastModifiedBy>'
+        '<dc:creator>ATCConfMaker</dc:creator>'
+        '<cp:lastModifiedBy>ATCConfMaker</cp:lastModifiedBy>'
         f'<dcterms:created xsi:type="dcterms:W3CDTF">{created}</dcterms:created>'
         f'<dcterms:modified xsi:type="dcterms:W3CDTF">{created}</dcterms:modified>'
         '</cp:coreProperties>'
@@ -3040,7 +3040,7 @@ def build_analysis_workbook(
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" '
         'xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">'
-        '<Application>KonfMaker</Application>'
+        '<Application>ATCConfMaker</Application>'
         f'<HeadingPairs><vt:vector size="2" baseType="variant"><vt:variant><vt:lpstr>Worksheets</vt:lpstr></vt:variant><vt:variant><vt:i4>{len(sheets)}</vt:i4></vt:variant></vt:vector></HeadingPairs>'
         f'<TitlesOfParts><vt:vector size="{len(sheets)}" baseType="lpstr">'
         + "".join(f'<vt:lpstr>{escape(name)}</vt:lpstr>' for name, _, _, _ in sheets)

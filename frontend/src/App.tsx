@@ -3345,7 +3345,7 @@ function ManualConfigurationsPanel({
                     onClick={() => onOpenInCalculator(detail)}
                     type="button"
                   >
-                    Odpri v KonfMakerju
+                    Odpri v ATCConfMakerju
                   </button>
                   <button
                     className="secondary-button compact-button manual-transfer-button"
@@ -3353,7 +3353,7 @@ function ManualConfigurationsPanel({
                     onClick={() => onTransferDemandInput(detail)}
                     type="button"
                   >
-                    Prenesi sektorske ure in št. ljudi v KonfMaker
+                    Prenesi sektorske ure in št. ljudi v ATCConfMaker
                   </button>
                   <button
                     className="secondary-button compact-button"
@@ -4270,7 +4270,7 @@ function formatAllResultForCopy(result: CalculatorResponse): string {
 
 function formatResultForCsv(result: CalculatorResponse): string {
   const rows: (string | number | null | undefined)[][] = [
-    ['KonfMaker rezultat'],
+    ['ATCConfMaker rezultat'],
     [],
     ['Povzetek'],
     ['Podatek', 'Vrednost'],
@@ -4326,7 +4326,7 @@ function parseResultFromCsv(text: string): CalculatorResponse {
       break;
     }
   }
-  throw new Error('CSV ne vsebuje veljavnega KonfMaker rezultata.');
+  throw new Error('CSV ne vsebuje veljavnega ATCConfMaker rezultata.');
 }
 
 async function copyTextToClipboard(text: string): Promise<void> {
@@ -5876,7 +5876,7 @@ function shouldShowOnboarding(): boolean {
   }
 }
 
-function KonfMakerOnboarding({
+function ATCConfMakerOnboarding({
   onDismiss,
   onStartTour,
 }: {
@@ -5942,7 +5942,7 @@ function KonfMakerOnboarding({
               </div>
               <div>
                 <strong>3. Poženi solver</strong>
-                <span>Klikni »Izračunaj potrebno zasedbo« in KonfMaker pripravi sestavo.</span>
+                <span>Klikni »Izračunaj potrebno zasedbo« in ATCConfMaker pripravi sestavo.</span>
               </div>
             </div>
           </div>
@@ -5951,7 +5951,7 @@ function KonfMakerOnboarding({
             <span className="onboarding-number">2</span>
             <h2 id="konfmaker-onboarding-title">Dodelaj obstoječo ročno konfiguracijo</h2>
             <p id="konfmaker-onboarding-description">
-              Izberi obstoječo ročno konfiguracijo, jo prenesi v KonfMaker in jo nato popravi, izboljšaj ali dodatno optimiziraj.
+              Izberi obstoječo ročno konfiguracijo, jo prenesi v ATCConfMaker in jo nato popravi, izboljšaj ali dodatno optimiziraj.
             </p>
             <div className="onboarding-flow">
               <div>
@@ -5959,8 +5959,8 @@ function KonfMakerOnboarding({
                 <span>Odpri zavihek »Ročne konfiguracije« in izberi želeno sestavo.</span>
               </div>
               <div>
-                <strong>2. Prenesi cilj v KonfMaker</strong>
-                <span>Klikni »Prenesi sektorske ure in št. ljudi v KonfMaker«; konkretne izmene se ne prenesejo.</span>
+                <strong>2. Prenesi cilj v ATCConfMaker</strong>
+                <span>Klikni »Prenesi sektorske ure in št. ljudi v ATCConfMaker«; konkretne izmene se ne prenesejo.</span>
               </div>
               <div>
                 <strong>3. Izračunaj novo sestavo</strong>
@@ -6001,7 +6001,7 @@ const guidedTourSteps: Record<GuidedTourKind, GuidedTourStep[]> = {
       tab: 'calculator',
       target: '[data-tour="calculation-mode"]',
       title: '1. Izberi način izračuna',
-      description: 'Za novo konfiguracijo izberi »Odprtost sektorjev«. KonfMaker bo iz želene odprtosti izračunal potrebno zasedbo.',
+      description: 'Za novo konfiguracijo izberi »Odprtost sektorjev«. ATCConfMaker bo iz želene odprtosti izračunal potrebno zasedbo.',
     },
     {
       tab: 'calculator',
@@ -6045,15 +6045,15 @@ const guidedTourSteps: Record<GuidedTourKind, GuidedTourStep[]> = {
     {
       tab: 'manual-configs',
       target: '[data-tour="manual-transfer-demand"]',
-      title: '2. Prenesi cilj v KonfMaker',
-      description: 'Klikni »Prenesi sektorske ure in št. ljudi v KonfMaker«. Preneseta se ciljna odprtost po urah in število ljudi, ne konkretna sestava izmen.',
+      title: '2. Prenesi cilj v ATCConfMaker',
+      description: 'Klikni »Prenesi sektorske ure in št. ljudi v ATCConfMaker«. Preneseta se ciljna odprtost po urah in število ljudi, ne konkretna sestava izmen.',
       advanceOnTargetClick: true,
     },
     {
       tab: 'calculator',
       target: '[data-tour="license-people"]',
       title: '3. Preveri število ljudi in licence',
-      description: 'KonfMaker je vključil limit s prenesenim številom ljudi. Preveri še ciljno razmerje licenc FL, APS in ACS.',
+      description: 'ATCConfMaker je vključil limit s prenesenim številom ljudi. Preveri še ciljno razmerje licenc FL, APS in ACS.',
     },
     {
       tab: 'calculator',
@@ -6169,7 +6169,7 @@ function GuidedTour({
   return (
     <>
       <div className="guided-tour-dimmer" aria-hidden="true" />
-      <aside aria-live="polite" className="guided-tour-popover" role="dialog" aria-label="Interaktivni vodič po KonfMakerju">
+      <aside aria-live="polite" className="guided-tour-popover" role="dialog" aria-label="Interaktivni vodič po ATCConfMakerju">
         <div className="guided-tour-popover-top">
           <div>
             <p className="eyebrow">Interaktivni vodič</p>
@@ -7191,7 +7191,7 @@ function Results({
         scheduleShiftRules,
       );
       const fileLabel = safeFilenamePart(exportLabel.replace(/^Ročna konfiguracija\s+/i, ''));
-      downloadBlobFile(`konfmaker-${fileLabel || 'konfiguracija'}.xlsx`, blob);
+      downloadBlobFile(`atcconfmaker-${fileLabel || 'konfiguracija'}.xlsx`, blob);
     } catch (caught) {
       setExcelExportError(caught instanceof Error ? caught.message : 'Excel izvoza ni bilo mogoče pripraviti.');
     } finally {
@@ -7255,7 +7255,7 @@ function Results({
           <CopyButton label="Kopiraj povzetek" textFactory={() => formatMetricsForCopy(result)} />
           <button
             className="secondary-button compact-button copy-button"
-            onClick={() => downloadTextFile('konfmaker-result.csv', formatResultForCsv(result), 'text/csv;charset=utf-8')}
+            onClick={() => downloadTextFile('atcconfmaker-result.csv', formatResultForCsv(result), 'text/csv;charset=utf-8')}
             type="button"
           >
             Shrani CSV
@@ -8611,7 +8611,7 @@ export default function App() {
         [...manualSettings.shifts, ...manualSettings.officer_shifts],
       );
       const fileLabel = safeFilenamePart(configuration.name);
-      downloadBlobFile(`konfmaker-${fileLabel || 'rocna-konfiguracija'}.xlsx`, blob);
+      downloadBlobFile(`atcconfmaker-${fileLabel || 'rocna-konfiguracija'}.xlsx`, blob);
     } catch (caught) {
       setManualExcelExportError(
         caught instanceof Error ? caught.message : 'Excel izvoza ni bilo mogoče pripraviti.',
@@ -9304,12 +9304,12 @@ export default function App() {
     ? '2 / LKZP odprtost'
     : isProgramThree
       ? '3 / Analiza in teorija'
-      : '1 / KonfMaker';
+      : '1 / ATCConfMaker';
   const heroTitle = activeTab === 'airport'
     ? 'LKZP odprtost'
     : isProgramThree
       ? 'Analiza odprtosti sektorjev'
-      : 'KonfMaker';
+      : 'ATCConfMaker';
   const heroDescription = activeTab === 'airport'
     ? 'Izbira dovoljenih izmen ter razpored dela, pavz in prisotnega asistenta za letališke kontrole.'
     : isProgramThree
@@ -9328,7 +9328,7 @@ export default function App() {
     <main className="app-shell">
       <header className="hero">
         <div>
-          <p className="eyebrow">KonfMaker</p>
+          <p className="eyebrow">ATCConfMaker</p>
           <h1>{heroTitle}</h1>
           <p>{heroDescription}</p>
         </div>
@@ -9350,7 +9350,7 @@ export default function App() {
 
       <nav className="tabs" aria-label="Glavna navigacija">
         <button className={activeTab === 'calculator' ? 'active' : ''} onClick={() => setActiveTab('calculator')} type="button">
-          KonfMaker
+          ATCConfMaker
         </button>
         <button className={activeTab === 'settings' ? 'active' : ''} onClick={() => setActiveTab('settings')} type="button">
           Pravila
@@ -9362,7 +9362,7 @@ export default function App() {
           Primerjevalnik konfiguracij
         </button>
         <button className={activeTab === 'future' ? 'active' : ''} onClick={() => setActiveTab('future')} type="button">
-          Futuristični KonfMaker*
+          Futuristični ATCConfMaker*
         </button>
         <button className={activeTab === 'airport' ? 'active' : ''} onClick={() => setActiveTab('airport')} type="button">
           LKZP odprtost
@@ -9946,7 +9946,7 @@ export default function App() {
         />
       ) : null}
       {isOnboardingOpen ? (
-        <KonfMakerOnboarding
+        <ATCConfMakerOnboarding
           onDismiss={rememberOnboardingCompletion}
           onStartTour={startGuidedTour}
         />

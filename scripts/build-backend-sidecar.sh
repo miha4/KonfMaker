@@ -67,7 +67,7 @@ cd "$ROOT_DIR"
   --clean \
   --noconfirm \
   --onefile \
-  --name konfmaker-engine \
+  --name atcconfmaker-engine \
   --paths "$BACKEND_DIR" \
   --collect-all ortools \
   --collect-submodules uvicorn \
