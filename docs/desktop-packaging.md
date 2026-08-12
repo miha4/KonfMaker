@@ -26,18 +26,13 @@ Ta ukaz najprej zgradi Python sidecar `backend/dist/atcconfmaker-engine`, nato R
 ## Windows paket
 
 ```bash
-npm run desktop:build:win
+npm run desktop:build:win:setup
 ```
 
-Ukaz ustvari dve različici:
-
-- `ATCConfMaker-portable-<verzija>.exe`: ena prenosljiva datoteka brez namestitve,
-- `ATCConfMaker-Setup-<verzija>.exe`: klasični namestitveni program.
-
-Portable datoteka se zažene neposredno. Electron in Pythonov sidecar se med zagonom samodejno odpakirata v začasno Windows mapo; uporabniku ni treba ničesar ročno razpakirati ali namestiti.
+Ukaz ustvari samo `ATCConfMakerSetup.exe`. Namestitveni program brez administratorskih pravic enkrat namesti aplikacijo v stalno uporabniško mapo. Backend je izdelan v načinu PyInstaller `onedir`, zato se izvršilna koda ob vsakem zagonu ne razpakira v naključno `%TEMP%\\_MEI...` mapo.
 
 Windows build poženi na Windows računalniku ali Windows CI okolju, ker mora PyInstaller zgraditi Windows `atcconfmaker-engine.exe`. Build iz macOS okolja ni dovolj, ker bi dobil macOS Python sidecar.
-Zaradi tega `npm run desktop:build:win` na macOS/Linux namenoma prekine z razlago.
+Zaradi tega `npm run desktop:build:win:setup` na macOS/Linux namenoma prekine z razlago.
 
 Pripravljen je tudi ročni GitHub Actions workflow:
 
@@ -47,10 +42,11 @@ Pripravljen je tudi ročni GitHub Actions workflow:
 4. Klikni `Run workflow`.
 5. Po koncu prenesi artifact `atcconfmaker-windows`.
 
-Workflow ustvari oba paketa in ju prekopira na stabilni poti za download stran:
+Workflow ustvari Windows namestitveni paket in spremljevalni datoteki:
 
-- `download-site/downloads/ATCConfMaker-windows.exe` (portable, brez namestitve)
-- `download-site/downloads/ATCConfMaker-windows-setup.exe` (installer)
+- `download-site/downloads/ATCConfMakerSetup.exe` (stalna namestitev za Windows)
+- `download-site/downloads/ATCConfMakerSetup-SHA256.txt` (hashi vseh datotek namestitvenega payloada)
+- `download-site/downloads/ATCConfMaker-security.md` (tehnični opis za kibernetsko varnost)
 
 ## Arnes download stran
 
@@ -59,8 +55,7 @@ Mapa `download-site/` je statična stran za prenos. Na Arnes FTP jo lahko nalož
 Predvideni imeni paketov:
 
 - `downloads/ATCConfMaker-mac.dmg`
-- `downloads/ATCConfMaker-windows.exe` (privzeti portable prenos)
-- `downloads/ATCConfMaker-windows-setup.exe` (dodatni installer)
+- `downloads/ATCConfMakerSetup.exe`
 
 ## Podatki v desktop aplikaciji
 

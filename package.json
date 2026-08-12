@@ -13,12 +13,13 @@
     "desktop:dev": "npm run desktop:prepare-backend && npm run desktop:build-frontend && electron .",
     "desktop:bundle-backend": "node scripts/build-backend-sidecar.cjs",
     "desktop:build:mac": "npm run desktop:bundle-backend && npm run desktop:build-frontend && electron-builder --mac --publish never",
-    "desktop:build:win": "node scripts/assert-windows-build-host.cjs && npm run desktop:bundle-backend && npm run desktop:build-frontend && electron-builder --win --publish never",
+    "desktop:build:win": "node scripts/build-windows-setup.cjs",
+    "desktop:build:win:setup": "node scripts/build-windows-setup.cjs",
     "desktop:dist": "npm run desktop:bundle-backend && npm run desktop:build-frontend && electron-builder --publish never"
   },
   "devDependencies": {
-    "electron": "^33.3.2",
-    "electron-builder": "^25.1.8"
+    "electron": "43.4.0",
+    "electron-builder": "26.15.3"
   },
   "build": {
     "appId": "si.atcconfmaker.desktop",
@@ -39,8 +40,14 @@
         "from": "backend/dist",
         "to": "backend",
         "filter": [
-          "atcconfmaker-engine*"
+          "atcconfmaker-engine",
+          "atcconfmaker-engine.exe",
+          "atcconfmaker-engine/**/*"
         ]
+      },
+      {
+        "from": "docs/ATCConfMaker-security.md",
+        "to": "security/ATCConfMaker-security.md"
       },
       {
         "from": "Konfiguracije OKZP.xlsx",
@@ -66,15 +73,11 @@
     "win": {
       "icon": "build/icon.ico",
       "target": [
-        "nsis",
-        "portable"
+        "nsis"
       ]
     },
     "nsis": {
-      "artifactName": "ATCConfMaker-Setup-${version}.${ext}"
-    },
-    "portable": {
-      "artifactName": "ATCConfMaker-portable-${version}.${ext}"
+      "artifactName": "ATCConfMakerSetup.${ext}"
     }
   }
 }

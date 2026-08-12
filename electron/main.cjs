@@ -14,6 +14,7 @@ let backendStopRequested = false;
 let backendStopPromise = null;
 let backendShutdownComplete = false;
 let quitAfterBackendStopRequested = false;
+let backendUsesSelfExtractingLayout = false;
 
 function appResourcePath(...parts) {
   return app.isPackaged ? path.join(process.resourcesPath, ...parts) : path.join(ROOT_DIR, ...parts);
@@ -55,7 +56,9 @@ function findDevPython() {
 
 function packagedEnginePath() {
   const binaryName = process.platform === 'win32' ? 'atcconfmaker-engine.exe' : 'atcconfmaker-engine';
-  return appResourcePath('backend', binaryName);
+  const oneFilePath = appResourcePath('backend', binaryName);
+  const oneDirPath = appResourcePath('backend', 'atcconfmaker-engine', binaryName);
+  return fileExists(oneDirPath) ? oneDirPath : oneFilePath;
 }
 
 function backendEnvironment() {
@@ -94,6 +97,7 @@ function startBackend() {
     if (!fileExists(enginePath)) {
       throw new Error(`Zapakiran ATCConfMaker engine ni najden: ${enginePath}`);
     }
+    backendUsesSelfExtractingLayout = path.dirname(enginePath) === appResourcePath('backend');
     backendProcess = spawn(enginePath, [], {
       cwd: path.dirname(enginePath),
       env,
@@ -173,7 +177,7 @@ function stopBackend() {
     child.once('exit', finish);
     child.once('close', finish);
 
-    if (process.platform === 'win32') {
+    if (process.platform === 'win32' && backendUsesSelfExtractingLayout) {
       const killer = spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], {
         windowsHide: true,
         stdio: 'ignore',
@@ -186,6 +190,16 @@ function stopBackend() {
         }
       });
       killer.on('close', finish);
+      giveUpTimer = setTimeout(finish, 3000);
+      return;
+    }
+
+    if (process.platform === 'win32') {
+      try {
+        child.kill();
+      } catch {
+        // Ignore shutdown races while the fixed-layout packaged engine exits.
+      }
       giveUpTimer = setTimeout(finish, 3000);
       return;
     }
@@ -247,7 +261,7 @@ function backendHealthCheck() {
   });
 }
 
-async function waitForBackend(timeoutMs = 60000) {
+async function waitForBackend(timeoutMs = 120000) {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
     if (await backendHealthCheck()) {
@@ -341,7 +355,7 @@ function createWindow() {
     }
   });
 
-  mainWindow.loadURL(startupHtml('Zaganjam ATCConfMaker', 'Lokalni optimizacijski engine se pripravlja. To običajno traja nekaj sekund.'));
+  mainWindow.loadURL(startupHtml('Zaganjam ATCConfMaker', 'Lokalni optimizacijski engine se pripravlja. Prvi zagon lahko zaradi varnostnega pregleda traja do dve minuti.'));
   return mainWindow;
 }
 
@@ -357,7 +371,7 @@ async function boot() {
 
   const backendReady = await waitForBackend();
   if (!backendReady) {
-    await showStartupError(new Error('Lokalni engine se ni odzval v 60 sekundah.'));
+    await showStartupError(new Error('Lokalni engine se ni odzval v 120 sekundah.'));
     return;
   }
 

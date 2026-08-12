@@ -2,6 +2,8 @@
 
 ATCConfMaker is a web-based planning prototype for calculating maximum sector hours for an ATC daily configuration.
 
+For the controlled Windows deployment, build process, hashes and cyber-security review, see [docs/ATCConfMaker-security.md](docs/ATCConfMaker-security.md).
+
 ## Stack
 
 - Frontend: React + TypeScript + Vite

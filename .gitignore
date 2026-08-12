@@ -19,6 +19,8 @@ release/
 konfmaker-engine.spec
 atcconfmaker-engine.spec
 download-site/downloads/
+atcconfmaker-windows/
+outputs/
 
 # OS / editors
 .DS_Store

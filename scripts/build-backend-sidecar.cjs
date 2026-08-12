@@ -6,6 +6,7 @@ const ROOT_DIR = path.resolve(__dirname, '..');
 const BACKEND_DIR = path.join(ROOT_DIR, 'backend');
 const VENV_DIR = process.env.BACKEND_DESKTOP_BUNDLE_VENV_DIR || path.join(BACKEND_DIR, '.desktop-venv');
 const isWindows = process.platform === 'win32';
+const bundleMode = (process.env.BACKEND_DESKTOP_BUNDLE_MODE || 'onefile').trim().toLowerCase();
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -136,20 +137,27 @@ function ensureVenv(pythonCommand) {
 }
 
 function main() {
+  if (!['onefile', 'onedir'].includes(bundleMode)) {
+    throw new Error(`Neveljaven BACKEND_DESKTOP_BUNDLE_MODE: ${bundleMode}`);
+  }
+
   const pythonCommand = findPython();
   const venvPython = ensureVenv(pythonCommand);
   const distPath = path.join(BACKEND_DIR, 'dist');
   const workPath = path.join(BACKEND_DIR, 'build');
 
   run(venvPython, ['-m', 'pip', 'install', '--upgrade', 'pip', 'setuptools', 'wheel']);
-  run(venvPython, ['-m', 'pip', 'install', '-r', path.join(BACKEND_DIR, 'requirements.txt'), 'pyinstaller']);
+  run(venvPython, ['-m', 'pip', 'install', '-r', path.join(BACKEND_DIR, 'requirements-desktop-build.txt')]);
+
+  removeDirectory(distPath);
+  removeDirectory(workPath);
 
   run(venvPython, [
     '-m',
     'PyInstaller',
     '--clean',
     '--noconfirm',
-    '--onefile',
+    bundleMode === 'onedir' ? '--onedir' : '--onefile',
     '--name',
     'atcconfmaker-engine',
     '--paths',
@@ -167,9 +175,13 @@ function main() {
     '--workpath',
     workPath,
     path.join(ROOT_DIR, 'electron', 'backend_entry.py'),
-  ]);
+  ], {
+    env: {
+      PYINSTALLER_CONFIG_DIR: path.join(VENV_DIR, 'pyinstaller-cache'),
+    },
+  });
 
-  console.log(`Backend sidecar built in ${distPath}`);
+  console.log(`Backend sidecar (${bundleMode}) built in ${distPath}`);
 }
 
 try {
